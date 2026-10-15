@@ -1,0 +1,11 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {totals,validate,nextNumber,numeric,seed} from '../dist/model.js';
+test('calcula bases, impuestos mixtos y total en céntimos',()=>{const t=totals({lines:[{qty:2,price:'12,50',tax:21},{qty:3,price:'10',tax:10}]});assert.equal(t.base,55);assert.equal(t.vat,8.25);assert.equal(t.total,63.25);});
+test('redondea cada línea antes de calcular impuestos',()=>{assert.equal(totals({lines:[{qty:3,price:0.1,tax:21}]}).total,.36);});
+test('admite decimales con coma',()=>assert.equal(numeric(' 15,75 '),15.75));
+test('impide revisar borradores incompletos',()=>{const d=seed();const i={date:'',lines:[{description:'',qty:0,price:'abc',tax:21}]};assert.ok(validate(i,null,d.company).length>=5);});
+test('rechaza importes negativos y tasas no admitidas',()=>{const d=seed(),i=structuredClone(d.invoices[0]);i.lines[0].price=-5;i.lines[0].tax=42;assert.equal(validate(i,d.clients[0],d.company).length,2);});
+test('un documento completo pasa la revisión',()=>{const d=seed();assert.deepEqual(validate(d.invoices[0],d.clients[0],d.company),[]);});
+test('numeración separada por año y serie',()=>{const inv=[{number:'F-2026-041'},{number:'F-2025-300'},{number:'R-2026-007'},{number:null}];assert.equal(nextNumber(inv,'2026-10-14'),'F-2026-042');assert.equal(nextNumber(inv,'2026-10-14',true),'R-2026-008');assert.equal(nextNumber(inv,'2027-01-01'),'F-2027-001');});
+test('las facturas de ejemplo conservan datos históricos independientes',()=>{const d=seed();const i=d.invoices.find(i=>i.status==='issued');const name=i.clientSnapshot.name;d.clients.find(c=>c.id===i.clientId).name='Otro nombre';assert.equal(i.clientSnapshot.name,name);});
