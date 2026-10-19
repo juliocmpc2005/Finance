@@ -8,7 +8,7 @@ Type=simple
 User=adg-finance
 Group=adg-finance
 WorkingDirectory=/opt/adg-finance
-ExecStart=/usr/bin/python3 /opt/adg-finance/serve.py
+ExecStart=/opt/adg-finance/.venv/bin/python /opt/adg-finance/serve.py
 Environment=ADG_PORT=4173
 Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/adg-finance/browsers
 Environment=ADG_DATA_DIR=/var/lib/adg-finance

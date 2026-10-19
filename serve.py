@@ -10,7 +10,7 @@ from uuid import UUID
 from zipfile import ZipFile, ZIP_DEFLATED, is_zipfile, BadZipFile
 from backend.finance import initialize, validate_state, command, DomainError, now, uid
 from backend.importer import parse_xlsx, import_commit
-from backend import auth, access, emitters, templates, documents, emitter_drafts
+from backend import auth, access, emitters, templates, documents, emitter_drafts, verifactu, workspace_retention as retention_rules
 
 ROOT=Path(__file__).resolve().parent
 DATA=Path(os.environ.get('ADG_DATA_DIR',ROOT/'data'));DATA.mkdir(parents=True,exist_ok=True)
@@ -44,6 +44,18 @@ def backup_before_issuer_migration():
             if dest.execute('PRAGMA integrity_check').fetchone()[0]!='ok':raise RuntimeError('La copia previa no ha superado la comprobación de integridad. No se ha migrado la instalación.')
 
 backup_before_issuer_migration()
+if (DATA/'finance.sqlite').exists():
+    with closing(sqlite3.connect(DATA/'finance.sqlite')) as source:
+        if not source.execute("SELECT 1 FROM sqlite_master WHERE name='vf_records'").fetchone():
+            with closing(sqlite3.connect(DATA/'backups'/('antes-verifactu-'+now().replace(':','-')+'.sqlite'))) as backup:
+                source.backup(backup)
+                if backup.execute('PRAGMA integrity_check').fetchone()[0]!='ok':raise RuntimeError('La copia previa a VERI*FACTU no es válida.')
+if (DATA/'finance.sqlite').exists():
+    with closing(sqlite3.connect(DATA/'finance.sqlite')) as source:
+        if not source.execute("SELECT 1 FROM sqlite_master WHERE name='draft_activity'").fetchone():
+            with closing(sqlite3.connect(DATA/'backups'/('antes-limites-borradores-'+now().replace(':','-')+'.sqlite'))) as backup:
+                source.backup(backup)
+                if backup.execute('PRAGMA integrity_check').fetchone()[0]!='ok':raise RuntimeError('La copia previa a los límites de borradores no es válida.')
 with connect() as c:
     c.executescript('''CREATE TABLE IF NOT EXISTS state(id INTEGER PRIMARY KEY CHECK(id=1),revision INTEGER NOT NULL,body TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS history(revision INTEGER PRIMARY KEY,created_at TEXT NOT NULL,description TEXT NOT NULL,body TEXT NOT NULL);
@@ -57,6 +69,8 @@ with connect() as c:
             c.execute('ALTER TABLE '+table+' ADD COLUMN '+column+' '+definition)
     emitters.initialize_schema(c)
     documents.initialize_schema(c)
+    verifactu.initialize_schema(c)
+    retention_rules.initialize_schema(c)
     c.execute('CREATE TABLE IF NOT EXISTS emitter_operations(actor_id TEXT NOT NULL,emitter_id TEXT NOT NULL,operation_key TEXT NOT NULL,signature TEXT NOT NULL,revision INTEGER NOT NULL,PRIMARY KEY(actor_id,emitter_id,operation_key))')
     c.execute('INSERT OR IGNORE INTO emitter_operations SELECT actor_id,emitter_id,operation_key,signature,revision FROM operations')
 
@@ -64,9 +78,10 @@ def current(c,emitter_id=emitters.DEFAULT):
     if emitter_id==emitters.DEFAULT:r=c.execute('SELECT revision,body FROM state WHERE id=1').fetchone()
     else:r=c.execute('SELECT revision,body FROM emitter_state WHERE emitter_id=?',(emitter_id,)).fetchone()
     return (r['revision'],json.loads(r['body'])) if r else (0,None)
-def store(c,state,revision,description,user=None):
+def store(c,state,revision,description,user=None,retention=True):
     ident=user.get('emitterId',emitters.DEFAULT) if user else emitters.DEFAULT
-    emitter=emitters.record(c,ident);emitters.check_state_binding(state,emitter)
+    previous=current(c,ident)[1] if retention else None
+    emitter=emitters.record(c,ident);emitters.check_state_binding(state,emitter);verifactu.protect(c,state,ident)
     normalized_nif=str(state.get('company',{}).get('nif','')).replace(' ','').upper()
     if normalized_nif and c.execute("SELECT 1 FROM emitters WHERE id<>? AND upper(replace(nif,' ',''))=?",(ident,normalized_nif)).fetchone():raise DomainError('Ya existe otro perfil con ese NIF. Selecciona el emisor correspondiente.')
     for invoice in state.get('invoices',[]):
@@ -85,7 +100,19 @@ def store(c,state,revision,description,user=None):
         c.execute('INSERT INTO emitter_history VALUES(?,?,?,?,?)',(ident,rev,stamp,description,body));c.execute('DELETE FROM emitter_history WHERE emitter_id=? AND revision < ?',(ident,rev-200))
     c.execute('INSERT INTO audit(revision,created_at,description,actor_id,emitter_id) VALUES(?,?,?,?,?)',(rev,stamp,description,user['id'] if user else None,ident))
     c.execute('UPDATE emitters SET name=?,nif=? WHERE id=?',(state['company'].get('name',''),state['company'].get('nif',''),ident))
-    return {'revision':rev,'state':state,'emitterId':ident}
+    result={'revision':rev,'state':state,'emitterId':ident}
+    if retention:
+        removed=retention_rules.after_changes(c,[(ident,previous,state)],store,user,description.startswith('Restaurar copia'))
+        if removed:
+            latest,kept=current(c,ident);result.update(revision=latest,state=kept)
+            result['notices']=[('Se ha eliminado el borrador que llevaba más tiempo sin editar.' if len(removed)==1 else 'Se han eliminado '+str(len(removed))+' borradores sin ediciones recientes.')+' Se conservan hasta 15 por usuario.']
+    return result
+
+# Backfill the server-owned queue once, preserving issued invoices and text history.
+with connect() as c:
+    snapshots=retention_rules.states(c)
+    retention_rules.seed_queue(c,snapshots)
+    retention_rules.prune(c,snapshots,store)
 
 _verified_backups={}
 def prune_daily_backups():
@@ -178,6 +205,7 @@ def validate_restore_files(state,files,allow_existing=False):
 
 def check_restore_scope(state):
     if not isinstance(state,dict):raise DomainError('La copia debe contener los datos de la empresa.')
+    state.pop('_verifactuArchive',None)
     scope=state.pop('_recoveryScope',None)
     if scope is not None and (not isinstance(scope,dict) or scope.get('type')!='company'):
         raise DomainError('Esta copia contiene solo los cambios de un usuario y no puede sustituir los datos de toda la empresa. Conserva el archivo para recuperar sus borradores con el administrador.')
@@ -371,6 +399,15 @@ class LocalHandler(SimpleHTTPRequestHandler):
                 user=self.require_user(c)
                 revision,state=current(c,user['emitterId'])
                 if path=='/api/state':return self.send_json({'revision':revision,'state':access.project_state(state,user)})
+                if path=='/api/text-history':return self.send_json(retention_rules.text_history(c,user,state))
+                if path=='/api/verifactu/config':return self.send_json(verifactu.public_config(c,user))
+                if path=='/api/verifactu/records':return self.send_json({'records':verifactu.list_records(c,user)})
+                if path.startswith('/api/verifactu/records/'):
+                    parts=path.split('/');record,invoice=verifactu.require_record(c,user,parts[4])
+                    if len(parts)==6 and parts[5]=='xml':
+                        body=record['request_xml'];self.send_response(200);self.send_header('Content-Type','application/xml; charset=utf-8');self.send_header('Content-Disposition','attachment; filename="registro-pruebas.xml"');self.send_header('Content-Length',str(len(body)));self.end_headers();return self.wfile.write(body)
+                    attempts=[dict(r) for r in c.execute('SELECT created_at,status,error FROM vf_attempts WHERE record_id=? ORDER BY id DESC LIMIT 50',(record['id'],))]
+                    return self.send_json({'record':{k:v for k,v in record.items() if k not in ['request_xml','invoice_json']},'attempts':attempts})
                 if path=='/api/template-example':
                     auth.require_admin(user)
                     if user['emitterId']!=emitters.DEFAULT:raise auth.AccessError('La plantilla original pertenece a arquitecturadeguardia.')
@@ -383,7 +420,9 @@ class LocalHandler(SimpleHTTPRequestHandler):
                         rows=c.execute('SELECT a.id,a.revision,a.created_at,a.description,u.name AS actor FROM audit a LEFT JOIN users u ON u.id=a.actor_id WHERE a.emitter_id=? ORDER BY a.id DESC LIMIT 200',(user['emitterId'],))
                     else:
                         rows=c.execute('SELECT a.id,a.revision,a.created_at,a.description,u.name AS actor FROM audit a LEFT JOIN users u ON u.id=a.actor_id WHERE a.actor_id=? AND a.emitter_id=? ORDER BY a.id DESC LIMIT 200',(user['id'],user['emitterId']))
-                    return self.send_json([dict(row) for row in rows])
+                    entries=[dict(row) for row in rows]
+                    if parse_qs(urlparse(self.path).query).get('excludeExamples')==['1']:entries=[entry for entry in entries if not entry['description'].startswith('Crear factura de ejemplo: ')]
+                    return self.send_json(entries)
                 if path.startswith('/api/documents/') or path.startswith('/api/document-versions/'):
                     ident=unquote(path.split('/')[3]);by_version=path.startswith('/api/document-versions/')
                     if by_version:
@@ -419,7 +458,8 @@ class LocalHandler(SimpleHTTPRequestHandler):
                     archived=[dict(row) for row in c.execute('SELECT * FROM documents WHERE emitter_id=?',(user['emitterId'],)) if row['invoice_id'] in invoice_ids]
                     required_documents={i['documentId'] for i in state['invoices'] if i.get('documentId')}
                     if not required_documents.issubset({row['id'] for row in archived}):raise DomainError('Falta un documento conservado. Recupéralo antes de crear una copia completa.')
-                    return self.respond(lambda:self.download_backup(state,files,revision,path.endswith('.zip'),user['emitter'],archived))
+                    fiscal_archive=verifactu.archive(c,user['emitterId'])
+                    return self.respond(lambda:self.download_backup(state,files,revision,path.endswith('.zip'),user['emitter'],archived,fiscal_archive))
                 if path.startswith('/api/attachments/'):
                     ident=path.split('/')[-1];self.authorize_attachment(c,state or {},user,ident);row=c.execute('SELECT * FROM attachments WHERE id=?',(ident,)).fetchone()
                     if not row or not (DATA/'attachments'/ident).is_file():return self.send_json({'error':'El justificante no se encuentra en el equipo. Revisa la copia de seguridad.'},404)
@@ -429,8 +469,9 @@ class LocalHandler(SimpleHTTPRequestHandler):
         except auth.AccessError as e:self.send_json({'error':str(e)},e.status)
         except (DomainError,ValueError) as e:self.send_json({'error':str(e)},400)
         except Exception:traceback.print_exc();self.send_json({'error':'No se han podido leer los datos locales.'},500)
-    def download_backup(self,state,files,revision,zipped,emitter=None,archived=None):
+    def download_backup(self,state,files,revision,zipped,emitter=None,archived=None,fiscal_archive=None):
         data=deepcopy(state);data['_backupRevision']=revision
+        if fiscal_archive and fiscal_archive['records']:data['_verifactuArchive']=fiscal_archive
         if emitter:data['_emitter']={key:emitter[key] for key in ['id','name','nif','kind']}
         archived=archived or []
         if zipped:
@@ -473,6 +514,23 @@ class LocalHandler(SimpleHTTPRequestHandler):
                     c.execute('BEGIN IMMEDIATE');account=self.account_user(c)
                     emitter=emitters.create(c,account,data) if path=='/api/emitters' else emitters.archive(c,account,path.split('/')[-1],data)
                 return self.send_json({'emitter':emitter},201 if path=='/api/emitters' else 200)
+            if path.startswith('/api/verifactu/'):
+                payload=json_object(self.read_body(250_000))
+                if path=='/api/verifactu/check':
+                    with connect() as c:return self.send_json(verifactu.connection_check(c,self.require_user(c),DATA))
+                with LOCK,connect() as c:
+                    c.execute('BEGIN IMMEDIATE');user=self.require_user(c)
+                    if path=='/api/verifactu/config':result=verifactu.save_config(c,user,payload,DATA)
+                    elif path=='/api/verifactu/action':
+                        _,state=current(c,user['emitterId']);result=verifactu.action(c,user,payload,state)
+                    else:raise auth.AccessError('Ruta no encontrada.',404)
+                return self.send_json(result)
+            if path=='/api/text-history':
+                payload=json_object(self.read_body(6_000_000))
+                with LOCK,connect() as c:
+                    c.execute('BEGIN IMMEDIATE');user=self.require_user(c)
+                    _,state=current(c,user['emitterId']);result=retention_rules.save_text(c,user,payload,state)
+                return self.send_json(result)
             if path=='/api/invoices/move-emitter':
                 payload=json_object(self.read_body(32_000))
                 with LOCK,connect() as c:
@@ -490,9 +548,13 @@ class LocalHandler(SimpleHTTPRequestHandler):
                         return self.send_json({'invoiceId':invoice_id,'emitterId':target_user['emitterId'],'source':{'revision':revision,'state':access.project_state(source,source_user)},'replayed':True})
                     if type(payload.get('revision')) is not int or payload['revision']!=revision:
                         return self.send_json({'error':'El borrador ha cambiado en otra sesión. Recarga para revisar los cambios antes de trasladarlo.','conflict':True},409)
+                    before_source=deepcopy(source);before_target=deepcopy(target)
                     moved=emitter_drafts.move(c,source,target,source_user,target_user,invoice_id)
-                    store(c,target,target_revision,'Recibir borrador desde '+source_user['emitter']['name'],target_user)
-                    result=store(c,source,revision,'Trasladar borrador a '+target_user['emitter']['name'],source_user)
+                    store(c,target,target_revision,'Recibir borrador desde '+source_user['emitter']['name'],target_user,retention=False)
+                    result=store(c,source,revision,'Trasladar borrador a '+target_user['emitter']['name'],source_user,retention=False)
+                    removed=retention_rules.after_changes(c,[(source_user['emitterId'],before_source,source),(target_user['emitterId'],before_target,target)],store,source_user)
+                    if removed:
+                        revision,source=current(c,source_user['emitterId']);result.update(revision=revision,state=source)
                     c.execute('INSERT INTO emitter_operations VALUES(?,?,?,?,?)',(source_user['id'],source_user['emitterId'],operation,signature,result['revision']))
                 result['state']=access.project_state(result['state'],source_user)
                 return self.send_json({'invoiceId':moved['id'],'emitterId':target_user['emitterId'],'source':result})
@@ -602,7 +664,12 @@ class LocalHandler(SimpleHTTPRequestHandler):
                     if typ=='restore':candidate=access.normalize_restore_owners(candidate,user,{row['id'] for row in c.execute('SELECT id FROM users WHERE is_root=1 OR id IN (SELECT user_id FROM memberships WHERE emitter_id=?)',(user['emitterId'],))})
                     else:candidate=access.stamp_changes(state,candidate,user)
                     if typ in ['issue_invoice','rename_invoice']:
-                        invoice=next(i for i in candidate['invoices'] if i['id']==cmd['invoiceId']);documents.capture(c,user['emitterId'],invoice,candidate)
+                        invoice=next(i for i in candidate['invoices'] if i['id']==cmd['invoiceId'])
+                        prepared=None
+                        if typ=='issue_invoice' and invoice.get('vfEnabled'):
+                            invoice['vfTest']=True;prepared=verifactu.prepare(c,invoice,candidate,user)
+                        documents.capture(c,user['emitterId'],invoice,candidate)
+                        if prepared:verifactu.finalize(c,prepared,invoice)
                     result=store(c,candidate,revision,desc,user)
                 else:return self.send_json({'error':'Ruta no encontrada.'},404)
                 if operation:c.execute('INSERT INTO emitter_operations VALUES(?,?,?,?,?)',(user['id'],user['emitterId'],operation,signature,result['revision']))
@@ -626,4 +693,5 @@ def re_uuid(s):
 if __name__=='__main__':
     print(f'arquitecturadeguardia Finance · http://localhost:{PORT}',flush=True)
     print(f'Datos locales: {DATA}',flush=True)
+    verifactu.start_worker(connect,LOCK,DATA)
     ThreadingHTTPServer(('127.0.0.1',PORT),LocalHandler).serve_forever()

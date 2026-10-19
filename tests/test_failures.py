@@ -76,7 +76,7 @@ class FailureTests(unittest.TestCase):
         with patch.object(self.module.documents,'render',side_effect=DomainError('Simulated snapshot failure')):
             self.assertEqual(self.client.command({'type':'issue_invoice','invoiceId':'capture-failure'})[0],400)
         self.assertEqual(self.client.state(),before)
-        status,result,_=self.client.command({'type':'issue_invoice','invoiceId':'capture-failure'});self.assertEqual(status,200,result);self.assertEqual(next(i for i in result['state']['invoices'] if i['id']=='capture-failure')['number'],'F-'+today()[:4]+'-001')
+        status,result,_=self.client.command({'type':'issue_invoice','invoiceId':'capture-failure'});self.assertEqual(status,200,result);self.assertEqual(next(i for i in result['state']['invoices'] if i['id']=='capture-failure')['number'],f'ADG-{(int(today()[5:7])-1)//3+1}º-{today()[:4]}-01')
     def test_database_failure_rolls_back_the_entire_command(self):
         before=self.client.state();original=self.module.store
         def fail_after_write(*args,**kwargs):original(*args,**kwargs);raise sqlite3.OperationalError('Simulated write failure before commit')

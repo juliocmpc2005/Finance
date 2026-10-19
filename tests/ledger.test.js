@@ -13,3 +13,13 @@ test('linked payment names group repeated allocations, subtract refunds and resp
 
 import {paymentAmount} from '../dist/ledger.js';
 test('un ingreso compartido solo muestra la parte propia y nunca ofrece saldo para repartir',()=>{const db=fixture();db.payments=[{id:'shared',date:'2026-02-01',amountCents:12000,restricted:true}];db.allocations=[{id:'part',paymentId:'shared',invoiceId:'a',date:'2026-02-03',amountCents:5000,voidDate:'2026-03-01'}];assert.equal(paymentAmount(db,db.payments[0],'2026-02-02'),0);assert.equal(paymentAmount(db,db.payments[0],'2026-02-10'),5000);assert.equal(paymentAmount(db,db.payments[0],'2026-03-02'),0);assert.equal(available(db,db.payments[0],'2026-02-10'),0);assert.equal(cashTotal(db,'2026-02-01','2026-02-28','2026-02-10'),5000);});
+
+test('VERI*FACTU tests and their receipts/refunds never enter ordinary analysis, even with examples included',()=>{const s=fixture();s.invoices.push({...s.invoices[0],id:'vf',number:'VF-F-2026-001',vfTest:true});s.payments=[{id:'vp',date:'2026-02-01',amountCents:5000,vfTest:true}];s.allocations=[{id:'va',paymentId:'vp',invoiceId:'vf',date:'2026-02-01',amountCents:5000}];s.refunds=[{id:'vr',paymentId:'vp',invoiceId:'vf',date:'2026-02-02',amountCents:1000}];const r={start:'2026-01-01',end:'2026-12-31'};assert.equal(summary(s,r,'2026-04-01','',true).totalCents,12100);assert.equal(cashTotal(s,r.start,r.end,'2026-04-01'),0);assert.equal(balances(s,'2026-04-01',true).length,1);assert.equal(balances(s,'2026-04-01',true,true).find(b=>b.invoice.id==='vf').pendingCents,8100);});
+
+test('las facturas de ejemplo quedan fuera de balances y resúmenes, incluso al pedir documentos de prueba',()=>{
+ const s=fixture();s.invoices.push({...s.invoices[0],id:'example',number:'EJEMPLO-2026-01',isExample:true,lines:[{qty:1,price:99999,tax:21}]});
+ const range={start:'2026-01-01',end:'2026-12-31'};
+ assert.equal(summary(s,range,'2026-10-19').totalCents,12100);
+ assert.equal(summary(s,range,'2026-10-19','',true).totalCents,12100);
+ assert.deepEqual(balances(s,'2026-10-19',true,true).map(b=>b.invoice.id),['a']);
+});

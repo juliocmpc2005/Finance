@@ -57,8 +57,8 @@ class AuthApiTests(unittest.TestCase):
         self.assertEqual(client.request('/api/state')[0],403)
         self.assertEqual(client.request('/api/auth/password',{'currentPassword':PASSWORD,'password':PERSONAL})[0],200)
         return client,result['user']
-    def issue(self,client,price=100):
-        snapshot=client.state();invoice={'id':uuid.uuid4().hex,'clientId':'a','date':'2026-01-10','status':'draft','number':None,'lines':[{'description':'Proyecto propio','qty':1,'price':price,'tax':0}],'notes':''}
+    def issue(self,client,price=100,description='',example=False):
+        snapshot=client.state();invoice={'id':uuid.uuid4().hex,'clientId':'a','date':'2026-01-10','status':'draft','number':None,'lines':[{'description':'Proyecto propio','qty':1,'price':price,'tax':0}],'notes':'','description':description,'isExample':example}
         snapshot['state']['invoices'].append(invoice)
         status,result,_=client.request('/api/state',snapshot);self.assertEqual(status,200,result)
         status,result,_=client.command({'type':'issue_invoice','invoiceId':invoice['id']});self.assertEqual(status,200,result)
@@ -95,6 +95,38 @@ class AuthApiTests(unittest.TestCase):
         for command in [{'type':'rename_invoice','invoiceId':ib['id'],'number':'AJENO'},{'type':'issue_invoice','invoiceId':ib['id']},{'type':'adjustment','invoiceId':ib['id'],'amountCents':100,'reason':'Ajeno'}]:
             self.assertEqual(alice.command(command)[0],403)
         self.assertNotIn(ib['number'],json.dumps(alice.request('/api/audit')[1]))
+    def test_member_examples_are_saved_and_archived_without_receipts_or_fiscal_records(self):
+        client,user=self.member();invoice=self.issue(client,example=True)
+        self.assertTrue(invoice['isExample']);self.assertEqual(invoice['number'],'EJEMPLO-2026-01')
+        self.assertEqual(invoice['ownerId'],user['id']);self.assertNotIn('verifactu',invoice)
+        before=client.state()
+        self.assertEqual(client.command({'type':'payment','amountCents':100,'date':'2026-02-01','payer':'Pagador','account':'Banco','allocations':[{'invoiceId':invoice['id'],'amountCents':100}]})[0],400)
+        self.assertEqual(client.state(),before)
+        self.assertTrue(any(a['description'].startswith('Crear factura de ejemplo: ') for a in client.request('/api/audit')[1]))
+        self.assertFalse(any('EJEMPLO-2026-01' in a['description'] for a in client.request('/api/audit?excludeExamples=1')[1]))
+        with closing(sqlite3.connect(self.data/'finance.sqlite')) as c:
+            html=c.execute('SELECT html FROM documents WHERE id=?',(invoice['documentId'],)).fetchone()[0]
+            self.assertIn('FACTURA DE EJEMPLO',html)
+            self.assertIn('SIN VALIDEZ FISCAL',html)
+            self.assertEqual(c.execute('SELECT count(*) FROM vf_records WHERE invoice_id=?',(invoice['id'],)).fetchone()[0],0)
+        attacker,_=self.member();self.assertEqual(attacker.state()['state']['invoices'],[])
+        changed=deepcopy(before);changed['state']['invoices'][0]['isExample']=False
+        self.assertEqual(client.request('/api/state',changed)[0],403)
+
+    def test_member_description_survives_save_issue_and_archival(self):
+        client,_=self.member();text='Proyecto <Trevenez> & reforma\nSegunda fase'
+        invoice=self.issue(client,description=text)
+        self.assertEqual(invoice['description'],text)
+        self.assertEqual(invoice['presentationSnapshot'],{'version':3,'showNumber':False,'showHonorariaTitle':False})
+        self.assertEqual(client.state()['state']['invoices'][0]['description'],text)
+        with closing(sqlite3.connect(self.data/'finance.sqlite')) as c:
+            html=c.execute('SELECT html FROM documents WHERE id=?',(invoice['documentId'],)).fetchone()[0]
+        self.assertIn('Proyecto &lt;Trevenez&gt; &amp; reforma\nSegunda fase',html)
+        self.assertNotIn(invoice['number'],html.split('<body>',1)[1])
+        self.assertNotIn('FACTURA DE HONORARIOS',html)
+        snapshot=client.state();snapshot['state']['invoices'][0]['description']='Alterada'
+        self.assertEqual(client.request('/api/state',snapshot)[0],403)
+
     def test_members_cannot_escalate_permissions_or_overwrite_hidden_data(self):
         client,user=self.member();own=self.issue(client);snapshot=client.state()
         bad=deepcopy(snapshot);bad['state']['company']['name']='Empresa falsa';self.assertEqual(client.request('/api/state',bad)[0],403)

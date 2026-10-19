@@ -31,3 +31,9 @@ Para una instalación vacía, crear el primer administrador desde el propio serv
 La referencia de Excel de Downloads es una comodidad del equipo actual. En el servidor se importa el Excel seleccionando el archivo desde el navegador.
 
 Referencias de configuración: [proxy inverso de Caddy](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy), [HTTPS automático](https://caddyserver.com/docs/automatic-https).
+
+## Adaptador experimental VERI*FACTU
+
+Instalar Python con soporte de entornos virtuales y ejecutar `sh scripts/setup-verifactu.sh` en el directorio del programa. Para ensayos privados, utilizar `.venv/bin/python` al arrancar el servidor; el ejemplo de servicio refleja ese intérprete. Conservar el directorio `backend/verifactu_specs/` con los esquemas fijados. El adaptador continúa limitado a preproducción aunque se configure un dominio HTTPS.
+
+La recuperación completa requiere también `ADG_DATA_DIR/vf-secrets/master.key`, además de SQLite y justificantes. Esa clave permite abrir los certificados cifrados: debe formar parte de la copia externa cifrada y restringida del directorio de datos; no se incluye en el ZIP financiero por emisor. Ver [alcance y pruebas](../reviews/2026-10-19-verifactu-experimental.md).

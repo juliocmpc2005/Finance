@@ -1,6 +1,6 @@
 import unittest
 from copy import deepcopy
-from backend.finance import initialize,command,balances,available,DomainError,validate_state,today
+from backend.finance import initialize,command,balances,available,DomainError,validate_state,today,next_invoice_number,invoice_number_key
 from backend.importer import parse_xlsx,import_commit,number_key
 from pathlib import Path
 
@@ -14,6 +14,52 @@ def payment(value=10000,alloc=None):return {'type':'payment','amountCents':value
 def apply(s,c):return command(s,c)[0]
 
 class FinanceTests(unittest.TestCase):
+    def test_examples_are_excluded_from_balances_and_normal_numbering(self):
+        s=fixture();example=deepcopy(s['invoices'][0]);example.update(id='example',number='EJEMPLO-2026-01',isExample=True);s['invoices'].append(example)
+        self.assertNotIn('example',balances(s));validate_state(s)
+        self.assertEqual(next_invoice_number(s,{'date':'2026-10-19'}),'ADG-4º-2026-01')
+        self.assertEqual(next_invoice_number(s,{'date':'2026-10-19','isExample':True}),'EJEMPLO-2026-02')
+        self.assertEqual(next_invoice_number(s,{'date':'2027-01-01','isExample':True}),'EJEMPLO-2027-01')
+        self.assertEqual(next_invoice_number(s,{'date':'2026-10-19','isExample':True,'originalId':'example'}),'EJEMPLO-R-2026-01')
+        with self.assertRaisesRegex(DomainError,'ejemplo'):command(s,payment(100,[{'invoiceId':'example','amountCents':100}]))
+        with self.assertRaisesRegex(DomainError,'numeración EJEMPLO'):command(s,{'type':'rename_invoice','invoiceId':'example','number':'ADG-4º-2026-99'})
+        with self.assertRaisesRegex(DomainError,'reservada'):command(s,{'type':'rename_invoice','invoiceId':'a','number':'EJEMPLO-2026-09'})
+        s['payments']=[{'id':'p','amountCents':100,'date':'2026-02-01','payer':'Pagador','account':'Banco'}]
+        s['allocations']=[{'id':'x','paymentId':'p','invoiceId':'example','amountCents':100,'date':'2026-02-01'}]
+        with self.assertRaisesRegex(DomainError,'ejemplo'):validate_state(s)
+
+    def test_example_flags_reject_invalid_types_and_fiscal_combinations(self):
+        for fields in [{'isExample':'false'},{'isExample':None},{'isExample':True,'vfEnabled':True},{'isExample':True,'vfTest':True}]:
+            s=fixture();s['invoices'][0].update(fields)
+            with self.subTest(fields=fields),self.assertRaises(DomainError):validate_state(s)
+        s=fixture();rect=deepcopy(s['invoices'][0]);rect.update(id='rect',originalId='a',isExample=True,number='EJEMPLO-R-2026-01');s['invoices'].append(rect)
+        with self.assertRaisesRegex(DomainError,'condición de ejemplo'):validate_state(s)
+
+    def test_adg_annual_counter_changes_quarter_without_changing_existing_invoices(self):
+        s=fixture();s['invoices']=[]
+        for number,flags in [('ADG-1º-2026-09',{}),('ADG-2º-2026-10',{}),('ADG-3º-2026-11',{'vfTest':True})]:
+            s['invoices'].append({'id':number,'status':'issued','number':number,**flags})
+        before=deepcopy(s)
+        for draft,expected in [({'date':'2026-10-01'},'ADG-4º-2026-12'),({'date':'2026-01-01'},'ADG-1º-2026-12'),({'date':'2027-01-01'},'ADG-1º-2027-01'),({'date':'2026-04-01','originalId':'r'},'ADG-R-2º-2026-01'),({'date':'2026-10-01','vfEnabled':True},'ADG-4º-2026-12')]:
+            self.assertEqual(next_invoice_number(s,draft),expected)
+        self.assertEqual(s,before)
+        for value,expected in [('2026-03-31',1),('2026-04-01',2),('2026-06-30',2),('2026-07-01',3),('2026-09-30',3),('2026-10-01',4)]:self.assertEqual(next_invoice_number({'invoices':[]},{'date':value}),f'ADG-{expected}º-2026-01')
+
+    def test_adg_legacy_and_renamed_numbers_are_reserved_with_at_least_two_digits(self):
+        s={'invoices':[{'status':'issued','number':'OTRA','numberHistory':[{'oldNumber':'F-2026-099'},{'oldNumber':'ADG-1º-2026-105'}]},{'status':'issued','number':'155-2026'},{'status':'draft','number':'ADG-4º-2026-999'}]}
+        self.assertEqual(next_invoice_number(s,{'date':'2026-10-01'}),'ADG-4º-2026-156')
+        self.assertEqual(next_invoice_number({'invoices':[{'status':'issued','number':'VF-F-2026-009'}]},{'date':'2026-10-01'}),'ADG-4º-2026-10')
+        self.assertEqual(invoice_number_key(' ADG-1º-2026-002 '),invoice_number_key('adg-1°-2026-2'))
+        self.assertNotEqual(invoice_number_key('ADG-R-1º-2026-02'),invoice_number_key('ADG-1º-2026-02'))
+
+    def test_optional_invoice_description_is_validated_without_requiring_legacy_values(self):
+        validate_state(fixture())
+        for text in ['', '   ', 'Proyecto de reforma\nSegunda fase', 'a'*2000]:
+            s=fixture();s['invoices'][0]['description']=text;validate_state(s)
+        for text in [None, 24, [], {}, 'a'*2001]:
+            s=fixture();s['invoices'][0]['description']=text
+            with self.subTest(description_type=type(text).__name__),self.assertRaises(DomainError):validate_state(s)
+
     def test_rename_preserves_receipts_source_and_rectifications(self):
         s=apply(fixture(),payment(4000,[{'invoiceId':'a','amountCents':4000}]))
         s['invoices'][0]['source']={'filename':'original.xlsx','row':7,'original':{'number':'a-2026'}}

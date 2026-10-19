@@ -7,3 +7,9 @@ test('un cobro recibido durante la edición de un borrador se conserva',()=>{con
 test('guardado no descarta texto escrito durante la petición',()=>{const snapshot=fixture(),local=structuredClone(snapshot),saved=structuredClone(snapshot);local.invoices[0].lines[0].description='Texto más reciente';saved.invoices[0].ownerId='user';saved.invoices[0].updatedAt='2026-01-02';const result=mergeStates(snapshot,local,saved);assert.equal(result.invoices[0].lines[0].description,'Texto más reciente');assert.equal(result.invoices[0].ownerId,'user');});
 
 test('el estado editable no comparte referencias con la última versión guardada',async()=>{const database=new LocalDatabase();database.read=async()=>({revision:1,state:fixture()});const view=await database.open();view.invoices.push({id:'nuevo',lines:[]});view.invoices[0].lines[0].description='Editado';assert.equal(database.state.invoices.length,2);assert.equal(database.state.invoices[0].lines[0].description,'Original');});
+
+test('un borrador eliminado por la cola no reaparece por un guardado sin cambios de contenido',()=>{
+ const base=fixture(),local=structuredClone(base),remote=structuredClone(base);local.invoices[0].updatedAt='2099-01-01';remote.invoices=remote.invoices.filter(i=>i.id!=='a');
+ assert.ok(!mergeStates(base,local,remote).invoices.some(i=>i.id==='a'));
+ local.invoices[0].lines[0].description='Texto nuevo que debe conservarse para recuperación';assert.throws(()=>mergeStates(base,local,remote),/otra sesión/);
+});

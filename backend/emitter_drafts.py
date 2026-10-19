@@ -41,7 +41,7 @@ def move(c, source, target, source_user, target_user, invoice_id):
         moved['clientId'] = recipient['id']
 
     for key in ['documentId', 'issuedAt', 'issuedByUserId', 'clientSnapshot', 'companySnapshot',
-                'templateSnapshot', 'numberHistory', 'source', 'imported', 'importBatchId',
+                'templateSnapshot', 'presentationSnapshot', 'numberHistory', 'source', 'imported', 'importBatchId',
                 'historicalTotals', 'isTemplateSample', 'originalId']:
         moved.pop(key, None)
     moved.update(emitterId=target_user['emitterId'], updatedAt=now(),

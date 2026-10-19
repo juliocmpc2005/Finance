@@ -22,7 +22,7 @@ La primera cuenta administradora es la **cuenta principal** y gestiona los emiso
 - Un usuario puede ser administrador en un emisor y normal en otro. Únicamente aparecen los emisores asignados. La gestión global de cuentas y contraseñas permanece reservada a la cuenta principal.
 - El emisor de cada petición se comprueba en el servidor, también para documentos PDF, justificantes, importaciones, restauraciones, auditoría y exportaciones. La selección se mantiene por pestaña: otra pestaña no puede cambiar el destino de un guardado pendiente.
 - Cambiar de emisor desde el menú lateral guarda el borrador y espera a que termine. Si falla la escritura, conserva la opción de descargar los cambios y bloquea el cambio para evitar pérdidas.
-- En **Nueva factura → Emitiendo como**, el selector traslada el mismo borrador al emisor elegido y continúa su edición. Conserva conceptos, importes, retención, fecha, notas y responsable; aplica la plantilla predeterminada del destino y reutiliza su cliente por NIF o copia la ficha si no existe. La numeración se asigna al emitir en el destino. El traslado es atómico, registra ambos históricos y admite reintentos sin duplicados. Solo permite emisores asignados y activos; las facturas emitidas y las rectificativas conservan su emisor. El responsable necesita acceso al destino.
+- En **Nueva factura → Emitiendo como**, el selector traslada el mismo borrador al emisor elegido y continúa su edición. Conserva descripción, conceptos, importes, retención, fecha, notas y responsable; aplica la plantilla predeterminada del destino y reutiliza su cliente por NIF o copia la ficha si no existe. La numeración se asigna al emitir en el destino. El traslado es atómico, registra ambos históricos y admite reintentos sin duplicados. Solo permite emisores asignados y activos; las facturas emitidas y las rectificativas conservan su emisor. El responsable necesita acceso al destino.
 - **Gestionar emisores** permite crear una empresa o autónomo con su NIF y datos fiscales. Archivar conserva el histórico y lo deja en consulta para la cuenta principal; reactivar recupera sus accesos anteriores. Un NIF identifica un único perfil, también entre los archivados.
 - En Clientes, un administrador con acceso a otro perfil puede copiar expresamente una ficha al otro emisor. Se copia únicamente el contacto, con un identificador nuevo. Los cambios posteriores son independientes y no se trasladan facturas ni cobros.
 
@@ -40,9 +40,35 @@ python3 manage_users.py reset-password correo@empresa.es
 
 Pide una nueva contraseña temporal de forma interactiva, revoca sesiones y conserva la desactivación de las cuentas desactivadas. El servidor futuro sigue pendiente de la adaptación HTTP de producción descrita en [deploy/README.md](deploy/README.md).
 
+## Descripción y presentación de las facturas
+
+**Nueva factura → Descripción** es un texto opcional de hasta 2000 caracteres, situado antes de Conceptos. Se guarda con el borrador, conserva los saltos de línea y aparece antes de los conceptos en los cuatro diseños. Si está vacío no ocupa espacio en el documento. Se conserva al duplicar o trasladar el borrador entre emisores, también para usuarios normales.
+
+La presentación actual omite «Factura de honorarios» y muestra el número visible únicamente cuando la factura está marcada como VERI*FACTU; las facturas sin marcar lo ocultan, incluidas las referencias de pago. La numeración permanece en los listados, cobros, exportaciones, archivos y registros de pruebas AEAT. Los PDF conservados y la presentación de los documentos VERI*FACTU ya sellados se mantienen. Cada nueva emisión guarda la versión de presentación en `presentationSnapshot`. El formato sin número responde a una preferencia visual: el artículo 6 del RD 1619/2012 exige número y, en su caso, serie en una factura fiscal.
+
+## Borradores y textos recientes
+
+Cada usuario conserva como máximo **15 borradores en total entre todos sus emisores**, incluidos ejemplos y borradores VERI*FACTU sin emitir. La cola se ordena por la última edición real guardada en el servidor. Abrir o volver a guardar sin cambiar los datos no actualiza la posición. Al superar 15 se elimina automáticamente el menos reciente de ese usuario; los demás usuarios y las facturas emitidas permanecen intactos. Se avisa al crear un nuevo borrador. Los traslados entre emisores se reconcilian una sola vez y no cuentan como dos borradores. Las pestañas antiguas no pueden resucitar un borrador eliminado; los cambios reales que entren en conflicto conservan la opción de recuperación.
+
+**Conceptos recientes** y **Descripciones recientes** permiten buscar y reutilizar los últimos **50 textos distintos de cada tipo por usuario y emisor**. Se guardan al terminar de escribir, al salir o revisar la factura, al emitir y antes de eliminar un borrador de la cola. Reutilizar un texto lo coloca al principio sin duplicarlo. Al llegar al límite salen los menos recientes. Se conserva el texto completo con saltos de línea y se inserta como texto seguro. Las listas privadas se guardan en SQLite, no en localStorage; otros usuarios y otros emisores no las reciben. La primera consulta recupera los textos de las facturas propias existentes, sin volver a rellenar entradas ya descartadas.
+
+La primera actualización guarda una copia SQLite completa `data/backups/antes-limites-borradores-*.sqlite` antes de aplicar la cola a los borradores existentes. La política también se aplica al restaurar una copia; las facturas emitidas no se eliminan. Las copias completas SQLite conservan además la cola y los historiales privados.
+
+## Facturas de ejemplo
+
+En **Nueva factura**, marcar **Factura de ejemplo** permite guardar y crear una muestra con serie anual propia `EJEMPLO-año-número`, independiente por emisor. Las rectificativas de ejemplos usan `EJEMPLO-R`. Se conservan conceptos, descripción, importes, plantilla y permisos del usuario. Al duplicar un ejemplo, el nuevo borrador sigue marcado; se puede desmarcar antes de emitir para crear una factura ordinaria. El cambio de emisor conserva la opción.
+
+Los ejemplos permanecen en Facturas con identificación visible y pueden descargarse como PDF marcado **FACTURA DE EJEMPLO · SIN VALIDEZ FISCAL**. No consumen números ADG ni cuentan en el importe emitido del mes. Quedan excluidos de Análisis, sus exportaciones, pendientes, selecciones de cobro e historial visible; la auditoría completa del servidor conserva la operación. Se ha retirado «Incluir ejemplos» de Análisis. El servidor impide usar VERI*FACTU en un ejemplo o asociarle cobros, ajustes o devoluciones. Tras crear el documento se conserva su clasificación y numeración; para cambiar la muestra se duplica como borrador.
+
+## Numeración ADG
+
+Las nuevas emisiones usan `ADG-trimestreº-año-número`, por ejemplo `ADG-4º-2026-01`. El trimestre procede de la fecha de expedición. El contador es anual por emisor: continúa entre trimestres y vuelve a 01 al cambiar de año. Se muestran al menos dos cifras (01…99, 100…). Las rectificativas tienen serie separada `ADG-R-trimestreº-año-número`.
+
+Las emisiones previas conservan sus números y documentos. Al calcular el siguiente se tienen en cuenta números ADG de todos los trimestres, series anteriores F/R, históricos numéricos, antiguas series VF-F/VF-R y los números guardados en el historial de renumeración. Las nuevas facturas ordinarias y de pruebas comparten la reserva de números dentro del emisor para no repetir identificadores; las de pruebas siguen excluidas de las cifras y cobros habituales. Los documentos VERI*FACTU previamente sellados conservan su presentación; las nuevas emisiones guardan `presentationSnapshot` versión 3 con la visibilidad del número.
+
 ## Cambiar el número de una factura
 
-Facturas → menú de tres puntos → **Editar número de factura**. También está disponible dentro de la factura y en el botón del lápiz de Análisis. Permite cambiar el identificador completo después de emitir, incluidas letras, año y cifras; se refleja en los listados, exportaciones y nuevos PDF. Los PDF ya descargados no se modifican.
+Facturas → menú de tres puntos → **Editar número de factura**. También está disponible dentro de la factura y en el botón del lápiz de Análisis. Permite cambiar el identificador completo después de emitir, incluidas letras, año y cifras; se refleja en los listados, exportaciones y nombres de los nuevos archivos PDF. Los PDF ya descargados no se modifican.
 
 Los cobros, saldos y rectificativas conservan sus vínculos. Los cambios de número quedan registrados con fecha, número anterior y nuevo, visibles en el diálogo y en Análisis → Historial. Se bloquean números usados por otras facturas, incluidos equivalentes históricos como `02-2026` y `F-2026-002`. La numeración automática no reutiliza números anteriores y una nueva importación reconoce las facturas renumeradas. Duplicar una factura crea un borrador sin heredar su historial de números.
 
@@ -128,3 +154,13 @@ El informe de resultados, dimensionamiento y condiciones pendientes antes de pub
 Antes de aplicar el nuevo esquema en una instalación existente, el servidor genera y verifica automáticamente una copia SQLite `data/backups/antes-multiemisor-*.sqlite`. Conserva sin reescribir el estado financiero original, su revisión, las numeraciones y el histórico. Añade perfiles, accesos y estados independientes para los siguientes emisores. Las facturas existentes siguen en arquitecturadeguardia y mantienen su plantilla. No se crean cuentas de prueba ni emisores de demostración en los datos reales.
 
 Las pruebas específicas están en `tests/test_emitters.py`, `tests/test_documents.py`, `tests/templates.test.js` y `tests/emitters-browser.mjs`. El informe de esta ampliación está en [reviews/2026-10-18-multiemisor.md](reviews/2026-10-18-multiemisor.md).
+
+## VERI*FACTU experimental (solo pruebas AEAT)
+
+En **Nueva factura** puedes marcar **VERI*FACTU · Pruebas AEAT**. Está desmarcada inicialmente; el borrador sigue siendo editable. Al emitir se fija su contenido y su número de prueba, incluso si el envío falla o es rechazado. Las correcciones generan registros nuevos. Los documentos `VF-F`/`VF-R` y sus cobros se mantienen fuera de los listados e informes habituales.
+
+Instala el adaptador con `sh scripts/setup-verifactu.sh` y arranca con `npm start`. En **VERI*FACTU · pruebas**, la cuenta principal configura la identidad del productor; los administradores añaden el certificado propio de cada empresa o autónomo. El envío automático permanece desactivado hasta activarlo para ese emisor. El destino está limitado al entorno oficial de pruebas y no existe opción de producción.
+
+Se conservan XML, huellas, intentos, respuestas y PDF. Los certificados se cifran y la contraseña de importación no se guarda. Para una recuperación completa conserva el directorio de datos y su clave privada del servidor mediante una copia cifrada con acceso restringido. Los ZIP por emisor incluyen un archivo fiscal de consulta, sin credenciales; no sustituyen la recuperación de la instalación completa.
+
+Las pruebas automatizadas usan certificados y respuestas sintéticos; la aceptación real en AEAT requiere configurar los certificados del usuario y comprobarla en su entorno de pruebas. Alcance, recuperación y fuentes: [informe de la integración experimental](reviews/2026-10-19-verifactu-experimental.md).

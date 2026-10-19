@@ -35,13 +35,13 @@ try{
  await p.getByLabel('Número de factura',{exact:true}).fill('F-2026-071');await p.getByRole('button',{name:'Guardar número',exact:true}).click();
  await p.waitForFunction(()=>!document.querySelector('dialog').open);await p.getByRole('button',{name:'F-2026-071',exact:true}).waitFor();
  await p.reload();await p.getByRole('button',{name:'F-2026-071',exact:true}).click();
- assert.equal(await p.locator('.heading h1').innerText(),'F-2026-071');assert.equal(await p.locator('.adg-document-heading h2').innerText(),'F-2026-071');assert.match(await p.locator('.adg-payment').innerText(),/F-2026-071/);
+ assert.equal(await p.locator('.heading h1').innerText(),'F-2026-071');assert.equal(await p.locator('.adg-document-heading h2').count(),0);assert.ok(!(await p.locator('.invoice-paper').innerText()).includes('F-2026-071'));
  assert.match(await p.locator('.invoice-payment-panel').innerText(),/60,00/);
  await p.getByRole('button',{name:'Editar número de factura',exact:true}).click();await p.getByText('Cambios anteriores (1)',{exact:true}).click();assert.match(await p.locator('.number-history').innerText(),/F-2026-044 → F-2026-071/);
  // A full identifier is editable, and user text remains text throughout the preview.
  const renamed='ADG/2026/071 <obra>';
  await p.getByLabel('Número de factura',{exact:true}).fill(renamed);await p.getByRole('button',{name:'Guardar número',exact:true}).click();await p.waitForFunction(()=>!document.querySelector('dialog').open);
- assert.equal(await p.locator('.heading h1').innerText(),renamed);assert.equal(await p.locator('.adg-document-heading h2').innerText(),renamed);assert.equal(await p.locator('.heading h1 obra').count(),0);
+ assert.equal(await p.locator('.heading h1').innerText(),renamed);assert.equal(await p.locator('.adg-document-heading h2').count(),0);assert.equal(await p.locator('.heading h1 obra').count(),0);
  await p.getByRole('button',{name:'Duplicar factura',exact:true}).click();await p.getByRole('heading',{name:'Nueva factura',exact:true}).waitFor();
  await p.getByRole('button',{name:'Guardar y cerrar',exact:true}).click();
  data=await (await fetch(base+'/api/state')).json();const draft=data.state.invoices.find(i=>!db.invoices.some(old=>old.id===i.id));assert.equal(draft.status,'draft');assert.equal(draft.numberHistory,undefined);

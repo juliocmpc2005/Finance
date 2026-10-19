@@ -6,6 +6,7 @@ const pauseForConflict=attempt=>new Promise(resolve=>setTimeout(resolve,Math.min
 export function mergeStates(base,local,remote,path=''){
  if(same(local,base))return structuredClone(remote);
  if(same(remote,base)||same(local,remote))return structuredClone(local);
+ if(path.startsWith('invoices.')&&base&&local&&remote===undefined&&same({...base,updatedAt:undefined},{...local,updatedAt:undefined}))return undefined;
  if(path.endsWith('.updatedAt'))return [local,remote].filter(Boolean).sort().at(-1);
  if(['invoices','clients'].includes(path)&&[base,local,remote].every(Array.isArray)){
   const maps=[base,local,remote].map(list=>new Map(list.map(item=>[item.id,item]))),ids=[...new Set([...local,...remote].map(item=>item.id))],result=[];
@@ -39,8 +40,8 @@ function commandCanRetry(base,remote,command){
  return same(relevant(base),relevant(remote));
 }
 export class LocalDatabase {
- constructor(){this.revision=0;this.state=null;this.queue=Promise.resolve();this.pending=0;this.failed=false;this.onError=()=>{};this.onSaved=()=>{};this.onWarning=()=>{};}
- async request(path,body){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const d=await r.json();if(!r.ok){const e=new Error(d.error||'No se han guardado los cambios.');e.conflict=r.status===409;e.status=r.status;throw e;}for(const message of d.warnings||[]){try{this.onWarning(message);}catch{}}return d;}
+ constructor(){this.revision=0;this.state=null;this.queue=Promise.resolve();this.pending=0;this.failed=false;this.onError=()=>{};this.onSaved=()=>{};this.onWarning=()=>{};this.onNotice=()=>{};}
+ async request(path,body){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const d=await r.json();if(!r.ok){const e=new Error(d.error||'No se han guardado los cambios.');e.conflict=r.status===409;e.status=r.status;throw e;}for(const message of d.notices||[]){try{this.onNotice(message);}catch{}}for(const message of d.warnings||[]){try{this.onWarning(message);}catch{}}return d;}
  async read(){const response=await fetch('/api/state');const data=await response.json();if(!response.ok)throw Error(data.error||'No se puede conectar con la base de datos.');return data;}
  async open(fallback){const data=await this.read();this.revision=data.revision;this.state=data.state;if(!this.state){const saved=await this.request('/api/state',{revision:this.revision,state:fallback});this.revision=saved.revision;this.state=saved.state;}return structuredClone(this.state);}
  save(state){if(this.failed)return Promise.reject(Error('Hay cambios sin guardar. Descarga una copia y recarga la página.'));const snapshot=structuredClone(state);this.pending++;

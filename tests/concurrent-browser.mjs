@@ -11,7 +11,7 @@ try{
  let arrived=0;let release;const barrier=new Promise(resolve=>release=resolve);
  for(const {page} of people)await page.route('**/api/state',async route=>{if(route.request().method()==='POST'&&arrived<5){arrived++;if(arrived===5)release();await barrier;}await route.continue();});
  const outcomes=await Promise.allSettled(people.map(async({page},n)=>{
-  await page.getByRole('button',{name:'Nueva factura',exact:true}).click();await page.locator('#client').selectOption('c1');await page.getByLabel('Concepto 1',{exact:true}).fill('Trabajo simultáneo '+n);await page.getByLabel('Precio 1',{exact:true}).fill(String(n+1));await page.getByRole('button',{name:'Revisar factura',exact:true}).click();await page.getByRole('button',{name:'Emitir de prueba'}).click();await page.getByRole('button',{name:'Imprimir / PDF',exact:true}).waitFor();
+  await page.getByRole('button',{name:'Nueva factura',exact:true}).click();await page.locator('#client').selectOption('c1');await page.getByLabel('Concepto 1',{exact:true}).fill('Trabajo simultáneo '+n);await page.getByLabel('Precio 1',{exact:true}).fill(String(n+1));await page.getByRole('button',{name:'Revisar factura',exact:true}).click();await page.getByRole('button',{name:'Emitir factura'}).click();await page.getByRole('button',{name:'Imprimir / PDF',exact:true}).waitFor();
   const data=await (await page.request.get(base+'/api/state')).json();assert.equal(data.state.invoices.length,1);assert.equal(data.state.invoices[0].ownerId,people[n].person.id);return data.state.invoices[0].number;
  }));
  for(const [index,result] of outcomes.entries())if(result.status==='rejected')console.log('FALLO CONTROLADO UI',index,result.reason.message,await people[index].page.locator('#toast').innerText());
