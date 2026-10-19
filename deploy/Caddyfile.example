@@ -1,0 +1,5 @@
+# Sustituir el dominio después de apuntar su DNS al servidor.
+finance.empresa.es {
+    reverse_proxy 127.0.0.1:4173
+    header Strict-Transport-Security "max-age=31536000"
+}

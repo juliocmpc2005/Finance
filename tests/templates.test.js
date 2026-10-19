@@ -1,0 +1,11 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {readFile} from 'node:fs/promises';
+import {renderPaper,availableTemplates} from '../dist/templates.js';
+import {totals} from '../dist/model.js';
+const invoice={id:'golden',date:'2026-10-18',number:'F-2026-001',status:'issued',lines:[{description:'Servicios profesionales de ejemplo',qty:1,price:100,tax:21}],notes:'Nota de ejemplo.'};
+const company={name:'Empresa de ejemplo',nif:'TESTEMISOR',address:'Dirección de ejemplo',iban:'ES00 0000 0000 0000 0000 0000',email:'ejemplo@example.test',phone:'000000000'},client={name:'Cliente de ejemplo',nif:'TESTCLIENTE',address:'Dirección del cliente'};
+test('el HTML de la plantilla original coincide exactamente con el anterior a multiemisor',async()=>assert.equal(renderPaper(invoice,{client:()=>client,company:()=>company}),await readFile(new URL('./fixtures/adg-original.html',import.meta.url),'utf8')));
+test('los tres diseños genéricos usan el emisor y no incluyen firma ni marca originales',()=>{assert.equal(availableTemplates(false).length,3);for(const template of availableTemplates(false)){const html=renderPaper({...invoice,templateId:template.id},{client:()=>client,company:()=>company});assert.ok(html.includes('generic-'+template.id));assert.ok(html.includes('TESTEMISOR'));assert.ok(!html.includes('adg-firma-original'));assert.ok(!html.includes('arquitecturadeguardia, S.L.'));}});
+test('la plantilla y los importes retenidos de una factura emitida son independientes de los nuevos valores predeterminados',()=>{const i={...invoice,withholdingRate:'15',templateId:'classic',templateSnapshot:{id:'minimal',version:1}},co={...company,defaultTemplateId:'compact'};assert.equal(totals(i).total,106);const html=renderPaper(i,{client:()=>client,company:()=>co});assert.ok(html.includes('generic-minimal'));assert.ok(html.includes('Retención IRPF 15 %'));assert.ok(html.includes('106,00'));});
+test('retención decimal exacta sobre la base, sin descontar de los cobros dos veces',()=>{const t=totals({...invoice,lines:[{description:'Servicio',qty:3,price:'0.335',tax:21}],withholdingRate:'7.25'});assert.equal(t.base,1.01);assert.equal(t.vat,.21);assert.equal(t.withholding,.07);assert.equal(t.total,1.15);});

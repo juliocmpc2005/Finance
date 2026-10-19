@@ -1,0 +1,53 @@
+{
+  "environment": {
+    "system": "Darwin",
+    "architecture": "arm64",
+    "note": "Mediciones sintéticas en el equipo local; no son un benchmark del VPS ni una garantía de capacidad."
+  },
+  "capacity": [
+    {
+      "invoices": 100,
+      "payments": 67,
+      "restore_ms": 26.2,
+      "read_requests": 40,
+      "concurrent_readers": 10,
+      "read_p50_ms": 40.0,
+      "read_p95_ms": 48.4,
+      "errors": 0
+    },
+    {
+      "invoices": 1000,
+      "payments": 667,
+      "restore_ms": 183.8,
+      "read_requests": 40,
+      "concurrent_readers": 10,
+      "read_p50_ms": 126.4,
+      "read_p95_ms": 171.9,
+      "errors": 0
+    },
+    {
+      "invoices": 5000,
+      "payments": 3334,
+      "restore_ms": 661.4,
+      "read_requests": 40,
+      "concurrent_readers": 10,
+      "read_p50_ms": 712.5,
+      "read_p95_ms": 837.9,
+      "errors": 0
+    }
+  ],
+  "writes": {
+    "users": 5,
+    "issued_invoices": 50,
+    "unique_numbers": 50,
+    "seconds": 5.19,
+    "controlled_revision_conflicts": 176,
+    "lost_invoices": 0
+  },
+  "crash_recovery": {
+    "killed_during_uncommitted_write": true,
+    "state_preserved": true,
+    "sqlite_integrity": "ok"
+  },
+  "peak_child_rss_mib": 268.5
+}

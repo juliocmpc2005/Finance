@@ -1,0 +1,3 @@
+import {ensureAuthenticated} from './auth.js';
+try{await ensureAuthenticated();await import('./app.js?v=emitters-1');}
+catch(error){const app=document.querySelector('#app');app.replaceChildren();const main=document.createElement('main');main.className='startup-error';const title=document.createElement('h1');title.textContent='No se puede abrir la aplicación';const text=document.createElement('p');text.textContent=error.message;const button=document.createElement('button');button.className='btn primary';button.textContent='Volver a intentar';button.onclick=()=>location.reload();main.append(title,text,button);app.append(main);}

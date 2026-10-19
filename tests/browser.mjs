@@ -1,9 +1,11 @@
+import {authenticateTest} from './auth-helper.mjs';
 import {chromium} from 'playwright';
 import assert from 'node:assert/strict';
 const browser=await chromium.launch({headless:true,executablePath:process.env.CHROME_PATH||'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'});
 try {
- const page=await browser.newPage({viewport:{width:1440,height:1000}});const errors=[];page.on('pageerror',e=>errors.push(e.message));
- await page.goto('http://localhost:4173');await page.getByRole('heading',{name:'Tus facturas'}).waitFor();
+ const base=process.env.ADG_TEST_URL||'http://localhost:4173',qa=await authenticateTest(base);
+ const page=await browser.newPage({viewport:{width:1440,height:1000}});await qa.page(page);const errors=[];page.on('pageerror',e=>errors.push(e.message));
+ await page.goto(process.env.ADG_TEST_URL||'http://localhost:4173');await page.getByRole('heading',{name:'Tus facturas'}).waitFor();
  await page.screenshot({path:'/tmp/claro-desktop.png',fullPage:true});
  await page.getByLabel('Buscar facturas').fill('Oliva');assert.equal(await page.locator('tbody tr').count(),2);
  await page.getByRole('button',{name:'Nueva factura',exact:true}).click();await page.getByRole('button',{name:'Revisar factura'}).click();await page.locator('[role=alert]').waitFor();

@@ -8,32 +8,37 @@ Aplicación local para preparar facturas y gestionar su análisis y cobro. Inter
 npm start
 ```
 
-Abrir http://localhost:4173. Requiere Python 3.10 o posterior. Para instalar las herramientas de pruebas: `npm install`.
+Abrir http://localhost:4173. Requiere Python 3.10 o posterior y Node.js LTS. Ejecutar `npm install` para instalar Playwright, utilizado para conservar los PDF. En este Mac utiliza Google Chrome; en otro equipo se puede indicar `CHROME_PATH` o instalar Chromium con `npx playwright install chromium`. Los PDF se preparan en el servidor y no envían datos a servicios externos.
 
-## Empresa y usuarios
+## Empresas, autónomos y usuarios
 
-La instalación representa una empresa. Al abrirla por primera vez, el titular crea su administrador con nombre, correo y contraseña. Las facturas, clientes y cobros existentes se conservan y se asignan inicialmente a ese administrador; antes de la asignación se guarda una copia JSON. No hay contraseña predeterminada.
+La instalación admite varios emisores independientes. El selector **Empresa / autónomo** cambia el contexto de Facturas, Clientes, Análisis y Configuración. En móvil aparece encima del contenido. Cada factura pertenece al emisor seleccionado y conserva el usuario responsable, creador y emisor material. Los clientes, series de numeración, cobros, anticipos, justificantes, importaciones e historial son independientes por perfil. Dos emisores pueden tener el mismo número de factura; dentro de un emisor sigue siendo único.
 
-- **Administrador:** acceso a todas las facturas y cobros de la empresa, clientes, configuración, importación, copias y Usuarios. En Facturas puede filtrar por usuario; cada factura muestra su responsable.
-- **Usuario normal:** crea y consulta sus propios borradores y facturas, cambia su número, emite, duplica y rectifica sus documentos y gestiona sus cobros, anticipos y análisis. Sus CSV contienen únicamente los datos visibles para su cuenta. El directorio de clientes es compartido: puede consultarlo y crear o editar sus propios clientes; los otros registros los modifica administración.
-- Cada factura guarda responsable, creador y emisor. Una rectificativa conserva el responsable de la factura original. La numeración se asigna en el servidor para toda la empresa en una sola transacción, aunque un usuario solo vea sus documentos.
-- Los permisos se comprueban en cada lectura y escritura del servidor, incluidas las descargas de justificantes. La respuesta al usuario normal ya contiene sus facturas filtradas. Las copias completas, restauración, importación y el ejemplo histórico de Word quedan reservados al administrador.
-- Un ingreso registrado por un usuario normal puede pagar sus facturas de varios clientes. Si el administrador reparte un ingreso entre facturas de distintos usuarios, cada uno ve solamente lo aplicado a sus facturas. El administrador gestiona el ingreso completo, su justificante, devoluciones y anulaciones. Los saldos personales no incluyen el importe de otros usuarios ni ofrecen ese dinero para repartirlo.
-- Las ediciones de documentos distintos se combinan conservando los cambios de las otras sesiones. Si coinciden cambios sobre el mismo dato se exige revisar el conflicto. La emisión simultánea mantiene números únicos en toda la empresa.
+La primera cuenta administradora es la **cuenta principal** y gestiona los emisores y los accesos en Usuarios. En una instalación anterior, el primer administrador activo pasa a ser la cuenta principal y las cuentas existentes conservan su acceso al emisor original. Al abrir una instalación sin usuarios, el titular crea su administrador: no existe contraseña predeterminada.
 
-**Usuarios → Crear usuario** crea una cuenta normal o administradora con contraseña temporal. La persona debe sustituirla por una personal antes de acceder a los datos. Editar permite cambiar el rol, restablecer la contraseña o desactivar el acceso. Cambiar rol, contraseña o estado revoca las sesiones anteriores. La última cuenta administradora activa está protegida. Desactivar una cuenta conserva sus documentos y el administrador sigue viéndolos.
+- **Cuenta principal:** acceso a todos los emisores, creación y archivo de perfiles, gestión de usuarios y permisos.
+- **Administrador de un emisor:** consulta y gestiona toda la facturación, clientes, configuración, cobros, importaciones y copias de ese perfil.
+- **Usuario normal de un emisor:** crea, consulta, renumera, duplica y rectifica sus propias facturas y gestiona sus cobros, anticipos y análisis. Comparte el directorio de clientes de ese perfil y puede crear o editar sus propias fichas.
+- Un usuario puede ser administrador en un emisor y normal en otro. Únicamente aparecen los emisores asignados. La gestión global de cuentas y contraseñas permanece reservada a la cuenta principal.
+- El emisor de cada petición se comprueba en el servidor, también para documentos PDF, justificantes, importaciones, restauraciones, auditoría y exportaciones. La selección se mantiene por pestaña: otra pestaña no puede cambiar el destino de un guardado pendiente.
+- Cambiar de emisor desde el menú lateral guarda el borrador y espera a que termine. Si falla la escritura, conserva la opción de descargar los cambios y bloquea el cambio para evitar pérdidas.
+- En **Nueva factura → Emitiendo como**, el selector traslada el mismo borrador al emisor elegido y continúa su edición. Conserva conceptos, importes, retención, fecha, notas y responsable; aplica la plantilla predeterminada del destino y reutiliza su cliente por NIF o copia la ficha si no existe. La numeración se asigna al emitir en el destino. El traslado es atómico, registra ambos históricos y admite reintentos sin duplicados. Solo permite emisores asignados y activos; las facturas emitidas y las rectificativas conservan su emisor. El responsable necesita acceso al destino.
+- **Gestionar emisores** permite crear una empresa o autónomo con su NIF y datos fiscales. Archivar conserva el histórico y lo deja en consulta para la cuenta principal; reactivar recupera sus accesos anteriores. Un NIF identifica un único perfil, también entre los archivados.
+- En Clientes, un administrador con acceso a otro perfil puede copiar expresamente una ficha al otro emisor. Se copia únicamente el contacto, con un identificador nuevo. Los cambios posteriores son independientes y no se trasladan facturas ni cobros.
 
-**Mi cuenta** permite cambiar la contraseña y cerrar sesión. Las contraseñas admiten frases de 15 a 128 caracteres y se guardan con scrypt y sal individual. Las sesiones se identifican mediante cookies HttpOnly/SameSite y el servidor conserva únicamente el hash del identificador; duran como máximo 12 horas y caducan tras dos horas sin solicitudes de la aplicación. Los accesos fallidos tienen límite de intentos. La cookie añade Secure en el dominio HTTPS configurado. Las facturas y credenciales no se guardan en localStorage. Cerrar sesión retira los datos de las otras pestañas de ese navegador.
+Las transferencias compartidas entre usuarios mantienen las restricciones anteriores: cada usuario normal recibe únicamente la parte aplicada a sus facturas. Las transferencias pueden pagar varias facturas y clientes dentro del mismo emisor. No se permiten repartos de un cobro entre emisores distintos.
 
-Si el administrador olvida su contraseña, la recuperación se hace desde el equipo de los datos, sin enviar correos ni exponer claves en argumentos:
+**Usuarios → Crear usuario** permite asignar, para cada empresa o autónomo, Sin acceso, Usuario normal o Administrador. Las cuentas nuevas utilizan contraseña temporal y deben elegir una personal. Cambiar accesos, rol, correo, contraseña o estado revoca las sesiones afectadas. Desactivar conserva sus documentos. La cuenta principal no puede desactivarse ni perder su rol mediante la interfaz.
+
+**Mi cuenta** permite cambiar la contraseña y cerrar sesión. Las contraseñas admiten frases de 15 a 128 caracteres y se guardan con scrypt y sal individual. Las sesiones utilizan cookies HttpOnly/SameSite y el servidor conserva únicamente su hash; duran como máximo 12 horas y caducan tras dos horas sin solicitudes de la aplicación. Los accesos fallidos tienen límite de intentos. La cookie añade Secure en el dominio HTTPS configurado. Las facturas y credenciales no se guardan en localStorage. Cerrar sesión retira los datos de otras pestañas del navegador.
+
+Para recuperar la contraseña desde el equipo de los datos:
 
 ```sh
 python3 manage_users.py reset-password correo@empresa.es
 ```
 
-Pide la nueva contraseña temporal de forma interactiva y cierra las sesiones de esa cuenta. Los usuarios desactivados permanecen desactivados.
-
-Para el servidor futuro hay ejemplos de servicio y proxy HTTPS en [deploy/README.md](deploy/README.md). Actualmente continúa funcionando en localhost. Las pautas de contraseñas y sesiones se han contrastado con las referencias de [almacenamiento de contraseñas de OWASP](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html) y [gestión de sesiones de OWASP](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html).
+Pide una nueva contraseña temporal de forma interactiva, revoca sesiones y conserva la desactivación de las cuentas desactivadas. El servidor futuro sigue pendiente de la adaptación HTTP de producción descrita en [deploy/README.md](deploy/README.md).
 
 ## Cambiar el número de una factura
 
@@ -70,10 +75,10 @@ Las hojas auxiliares no se combinan automáticamente con la principal. Un cobro 
 
 ## Datos y copias
 
-- Base de datos: `data/finance.sqlite`. Se conserva el historial de operaciones y las últimas 200 versiones completas del estado.
+- Base de datos: `data/finance.sqlite`. Se conserva el historial de operaciones y las últimas 200 versiones completas del estado por emisor. Las tablas originales se mantienen para arquitecturadeguardia; los perfiles nuevos utilizan estados independientes. Los usuarios, membresías y documentos conservados comparten la base de datos con comprobaciones de emisor en cada operación.
 - Justificantes: `data/attachments/`.
 - Copia diaria de SQLite: `data/backups/`. Se comprueba su integridad y se conservan las últimas 14 copias diarias; las copias manuales previas a cambios no se borran con esta retención. Incluye las cuentas, el estado y los registros de justificantes; los archivos de los justificantes permanecen en `data/attachments/`. Una copia local no protege frente a la pérdida del equipo.
-- Configuración → Descargar copia genera un ZIP con la facturación y sus justificantes. Los usuarios y contraseñas permanecen en las tablas de acceso de SQLite; restaurar este ZIP conserva las cuentas actuales. Los responsables desconocidos de una copia se asignan al administrador que restaura.
+- Configuración → Descargar copia genera un ZIP del emisor seleccionado con la facturación, sus justificantes y los documentos conservados, incluidos los PDF ya generados. Lleva un identificador de emisor y comprueba el NIF antes de restaurar. Los usuarios y contraseñas permanecen en las tablas de acceso de SQLite; restaurar este ZIP conserva las cuentas actuales. Los responsables desconocidos o sin acceso a ese perfil se asignan al administrador que restaura. Para trasladar una copia a una instalación nueva se crea el perfil con el mismo NIF y se revisa la restauración.
 - Configuración → Restaurar copia admite ZIP y JSON anteriores, muestra un resumen y exige confirmación. Antes de sustituir los datos conserva una copia local previa.
 - Los datos de facturación permanecen en la base de datos del servidor; el navegador mantiene la sesión de trabajo en memoria y permite descargar los cambios si falla el guardado. Se comprueba la revisión y se combinan cambios independientes para evitar sobrescrituras.
 - Si falla la copia automática después de guardar, se informa de que los cambios sí están guardados y se mantiene un aviso para descargar una copia. Si falla la escritura, permanece la opción de descargar los cambios sin guardar. Una recuperación de un usuario normal se identifica como parcial y no puede restaurarse como si fuera toda la empresa.
@@ -84,7 +89,14 @@ Las hojas auxiliares no se combinan automáticamente con la principal. Un cobro 
 
 Para trasladar la facturación a otra instalación se puede utilizar el ZIP. Para trasladar también las cuentas, detener el servidor y copiar todo `data/`, incluidos SQLite y los justificantes, según la guía de despliegue. La base de datos y los datos privados están excluidos de Git. La instalación funciona en local y admite un origen HTTPS configurado para el servidor futuro.
 
-## Plantilla de facturas
+## Plantillas de facturas
+
+**Configuración → Plantillas de factura** ofrece Clásico, Minimalista y Compacto para empresas y autónomos. Cada perfil elige un diseño predeterminado; cada borrador puede seleccionar otro. Los diseños genéricos admiten logo, color, nota, texto al pie, importe en letras y firma propia opcional. La plantilla **arquitecturadeguardia · Original** conserva exactamente su composición anterior y sus imágenes; las opciones de los diseños genéricos no cambian esos elementos.
+
+El perfil permite definir una retención predeterminada y ajustar el porcentaje en cada borrador. Se calcula sobre la base y se descuenta del importe a cobrar; PDF, listado, Análisis y reparto de cobros utilizan ese mismo importe neto. La configuración no decide por sí sola qué tratamiento fiscal corresponde a una operación.
+
+Al emitir se conservan los datos y la versión de plantilla y se archiva una representación imprimible independiente, con estilos e imágenes incorporados. **Descargar PDF conservado** genera el PDF en el servidor la primera vez y reutiliza después los mismos bytes. Cambiar el nombre, logo, IBAN o diseño predeterminado no modifica ese documento. La renumeración genera otra versión y **Documentos anteriores** permite descargar las previas. Para documentos históricos sin archivo previo, la primera descarga conserva su representación disponible sin modificar el estado financiero. Los históricos importados siguen identificados como representaciones de datos, no sustituyen el original.
+
 
 Logo y firma originales extraídos del Word facilitado por el usuario, datos fiscales y bancarios confirmados, honorarios y total calculado automáticamente en letras. La muestra está en Configuración y en http://localhost:4173/?view=template. No consume numeración ni se incorpora al listado.
 
@@ -109,3 +121,10 @@ python3 tests/stress-server.py
 
 El informe de resultados, dimensionamiento y condiciones pendientes antes de publicar está en [reviews/2026-10-17-fallos-y-capacidad.md](reviews/2026-10-17-fallos-y-capacidad.md). El servidor actual se mantiene para desarrollo y uso local: antes de exponerlo públicamente es necesaria la adaptación del motor HTTP descrita en [deploy/README.md](deploy/README.md).
 # Finance
+
+
+## Migración a varios emisores
+
+Antes de aplicar el nuevo esquema en una instalación existente, el servidor genera y verifica automáticamente una copia SQLite `data/backups/antes-multiemisor-*.sqlite`. Conserva sin reescribir el estado financiero original, su revisión, las numeraciones y el histórico. Añade perfiles, accesos y estados independientes para los siguientes emisores. Las facturas existentes siguen en arquitecturadeguardia y mantienen su plantilla. No se crean cuentas de prueba ni emisores de demostración en los datos reales.
+
+Las pruebas específicas están en `tests/test_emitters.py`, `tests/test_documents.py`, `tests/templates.test.js` y `tests/emitters-browser.mjs`. El informe de esta ampliación está en [reviews/2026-10-18-multiemisor.md](reviews/2026-10-18-multiemisor.md).

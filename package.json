@@ -1,13 +1,15 @@
 {
-  "name": "claro-facturas",
+  "name": "arquitecturadeguardia-finance",
   "version": "1.0.0",
   "private": true,
   "type": "module",
   "scripts": {
     "test": "node --test tests/*.test.js",
-    "start": "python3 -m http.server 4173 --directory dist"
+    "start": "python3 serve.py",
+    "test:backend": "python3 -m unittest discover -s tests -p 'test_*.py' -v",
+    "test:browser": "node tests/run-browser.mjs && node tests/analysis-browser.mjs && node tests/all-invoices-browser.mjs && node tests/invoice-number-browser.mjs && node tests/users-browser.mjs && node tests/resilience-browser.mjs && node tests/concurrent-browser.mjs && node tests/emitters-browser.mjs && node tests/invoice-emitter-browser.mjs"
   },
-  "devDependencies": {
+  "dependencies": {
     "playwright": "1.56.0"
   }
 }

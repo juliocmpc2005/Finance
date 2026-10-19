@@ -1,0 +1,24 @@
+{
+  "id": "template-preview",
+  "isTemplateSample": true,
+  "number": "2-2026",
+  "date": "2026-01-07",
+  "status": "issued",
+  "clientId": "reference-client",
+  "clientSnapshot": {
+    "name": "GSL DESARROLLOS CTM TREVENEZ, SL",
+    "nif": "B75459917",
+    "address": "P.E. La Red Sur. Calle La Red Sur Tres, 2\n41500 Alcalá de Guadaíra · Sevilla",
+    "email": ""
+  },
+  "companySnapshot": {},
+  "lines": [
+    {
+      "description": "Factura correspondiente a los honorarios de «Proyecto básico» de Nave industrial en la parcela I-2.1 del polígono Las Trevenez, Sector SUNS-T.1 «Trevenez Oeste» de Málaga.",
+      "qty": 1,
+      "price": 46500,
+      "tax": 21
+    }
+  ],
+  "notes": ""
+}
