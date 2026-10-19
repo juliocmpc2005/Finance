@@ -19,12 +19,23 @@ class FailureTests(unittest.TestCase):
         spec=importlib.util.spec_from_file_location('adg_failure_server',Path(__file__).resolve().parents[1]/'serve.py')
         cls.module=importlib.util.module_from_spec(spec)
         with patch.dict(os.environ,{'ADG_DATA_DIR':str(cls.data),'ADG_PORT':str(port),'ADG_PUBLIC_ORIGIN':''}):spec.loader.exec_module(cls.module)
-        cls.server=cls.module.ThreadingHTTPServer(('127.0.0.1',port),cls.module.LocalHandler)
-        cls.thread=threading.Thread(target=cls.server.serve_forever,daemon=True);cls.thread.start();cls.url=f'http://127.0.0.1:{port}'
+        cls.port=port;cls.server,cls.thread=cls.start(port);cls.url=f'http://127.0.0.1:{port}'
         cls.client=Client(cls.url);status,result,_=cls.client.request('/api/auth/setup',{'name':'Admin de pruebas de fallo','email':'fallos@example.test','password':PASSWORD});assert status==200,result
         assert cls.client.request('/api/state',{'revision':0,'state':fixture()})[0]==200
     @classmethod
-    def tearDownClass(cls):cls.server.shutdown();cls.server.server_close();cls.thread.join();cls.temp.cleanup()
+    def tearDownClass(cls):cls.stop(cls.server,cls.thread);cls.temp.cleanup()
+    @classmethod
+    def start(cls,port,**overrides):
+        server=cls.module.create_server(port,**overrides);thread=threading.Thread(target=server.run,daemon=True);thread.start()
+        return server,thread
+    @classmethod
+    def stop(cls,server,thread):cls.module.stop_server(server);thread.join(5)
+    def free_port(self):
+        sock=socket.socket();sock.bind(('127.0.0.1',0));port=sock.getsockname()[1];sock.close();return port
+    def login_attempts(self,key):
+        with self.module.connect() as database:
+            row=database.execute('SELECT failures FROM login_attempts WHERE key=?',(key,)).fetchone()
+        return row['failures'] if row else 0
     def setUp(self):
         self.assertEqual(self.client.command({'type':'restore','state':fixture()})[0],200)
     def test_non_object_json_rejected_without_server_error(self):
@@ -85,10 +96,12 @@ class FailureTests(unittest.TestCase):
     def test_truncated_http_body_is_rejected(self):
         # A complete JSON string with deliberately incorrect framing must not execute.
         host=self.url.split('//')[1];payload=json.dumps({'email':'nobody@example.test','password':'bad'}).encode()
-        with socket.create_connection(('127.0.0.1',self.server.server_port),timeout=3) as connection:
+        with socket.create_connection(('127.0.0.1',self.port),timeout=3) as connection:
             connection.sendall(f'POST /api/auth/login HTTP/1.0\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {len(payload)+50}\r\n\r\n'.encode()+payload);connection.shutdown(socket.SHUT_WR)
             response=connection.recv(4096)
-        self.assertIn(b' 400 ',response.split(b'\r\n',1)[0])
+        # Waitress never hands an incomplete body to the application: no response or a 400, and no login attempt.
+        self.assertTrue(response==b'' or b' 400 ' in response.split(b'\r\n',1)[0],response)
+        self.assertEqual(self.login_attempts('email:nobody@example.test'),0)
     def test_attachment_metadata_failure_leaves_no_orphan_file(self):
         before={p.name for p in (self.data/'attachments').iterdir()}
         with self.module.connect() as database:database.execute("CREATE TRIGGER fail_attachment BEFORE INSERT ON attachments BEGIN SELECT RAISE(ABORT,'Simulated attachment failure'); END")
@@ -120,26 +133,52 @@ class FailureTests(unittest.TestCase):
                 self.assertTrue(entered.wait(2));started=time.monotonic();self.assertEqual(Client(self.url).request('/api/auth/session')[0],200);self.assertLess(time.monotonic()-started,.5)
             finally:release.set();worker.join(3)
     def test_stalled_upload_times_out_and_server_recovers(self):
-        host=self.url.split('//')[1]
-        with patch.object(self.module,'CONNECTION_TIMEOUT',.15):
-            with socket.create_connection(('127.0.0.1',self.server.server_port),timeout=3) as connection:
+        host=self.url.split('//')[1];port=self.free_port();server,thread=self.start(port,channel_timeout=1,cleanup_interval=1)
+        try:
+            with socket.create_connection(('127.0.0.1',port),timeout=6) as connection:
                 connection.sendall(f'POST /api/auth/login HTTP/1.0\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{{'.encode())
-                response=connection.recv(4096);self.assertIn(b' 408 ',response.split(b'\r\n',1)[0])
+                # The stalled upload occupies no application thread: other requests are answered meanwhile.
+                started=time.monotonic();self.assertEqual(Client(f'http://127.0.0.1:{port}').request('/api/auth/session',headers={'Host':host})[0],200);self.assertLess(time.monotonic()-started,.5)
+                started=time.monotonic();self.assertEqual(connection.recv(4096),b'');self.assertLess(time.monotonic()-started,5)
+            self.assertEqual(self.login_attempts('email:'),0)
+        finally:self.stop(server,thread)
         self.assertEqual(self.client.request('/api/state')[0],200)
     def test_concurrent_connection_limit_is_bounded_and_recovers(self):
-        connections=[]
+        connections=[];host=self.url.split('//')[1]
         try:
-            # Occupy each request slot with an incomplete HTTP header, then one more.
+            # Occupy every connection with an incomplete HTTP header; one more waits until a slot frees.
             for _ in range(self.module.MAX_CONNECTIONS):
-                connection=socket.create_connection(('127.0.0.1',self.server.server_port),timeout=3);connection.sendall(b'GET / HTTP/1.0\r\n');connections.append(connection)
-            with socket.create_connection(('127.0.0.1',self.server.server_port),timeout=3) as overflow:
-                self.assertIn(b' 503 ',overflow.recv(4096).split(b'\r\n',1)[0])
+                connection=socket.create_connection(('127.0.0.1',self.port),timeout=3);connection.sendall(b'GET / HTTP/1.0\r\n');connections.append(connection)
+            overflow=socket.create_connection(('127.0.0.1',self.port),timeout=.5);connections.append(overflow)
+            overflow.sendall(f'GET /api/auth/session HTTP/1.0\r\nHost: {host}\r\n\r\n'.encode())
+            with self.assertRaises(socket.timeout):overflow.recv(4096)
+            for connection in connections[:-1]:connection.close()
+            overflow.settimeout(5);self.assertIn(b' 200 ',overflow.recv(4096).split(b'\r\n',1)[0])
         finally:
             for connection in connections:connection.close()
         for _ in range(50):
             if Client(self.url).request('/api/auth/session')[0]==200:break
             time.sleep(.01)
         else:self.fail('El servidor no recuperó las conexiones disponibles.')
+    def test_static_files_never_leave_dist(self):
+        dist=self.module.DIST
+        self.assertEqual(self.module.static_file('/'),dist/'index.html');self.assertEqual(self.module.static_file('/styles.css'),dist/'styles.css')
+        for path in ['/../serve.py','/%2e%2e/serve.py','/..%2fserve.py','//etc/passwd','/assets/','/assets','/styles.css/','/missing.js','/index.html%00.js']:
+            with self.subTest(path=path):self.assertIsNone(self.module.static_file(path))
+        status,body,_=self.client.request('/%2e%2e/serve.py');self.assertEqual(status,404);self.assertNotIn(b'import',body)
+        self.assertEqual(self.client.request('/styles.css',method='HEAD')[0],200)
+        self.assertEqual(self.client.request('/',method='PUT',data=b'x',raw=True)[0],501)
+    def test_client_address_comes_from_caddy_only_behind_the_public_origin(self):
+        host=self.url.split('//')[1];spoof={'Host':host,'X-Forwarded-For':'198.51.100.7'}
+        Client(self.url).request('/api/auth/login',{'email':'direct@example.test','password':'incorrecta'},headers=spoof)
+        self.assertEqual(self.login_attempts('address:198.51.100.7'),0)
+        with patch.object(self.module,'PUBLIC_ORIGIN','https://finance.example.test'):
+            port=self.free_port();server,thread=self.start(port)
+        try:
+            # Caddy forwards the real client; each address keeps its own limit.
+            Client(f'http://127.0.0.1:{port}').request('/api/auth/login',{'email':'proxied@example.test','password':'incorrecta'},headers={'Host':host,'X-Forwarded-For':'203.0.113.9'})
+            self.assertEqual(self.login_attempts('address:203.0.113.9'),1)
+        finally:self.stop(server,thread)
     def test_restore_previews_have_bounded_retention(self):
         body=json.dumps(fixture()).encode()
         for _ in range(5):self.assertEqual(self.client.request('/api/restore/preview',body,raw=True)[0],200)

@@ -22,5 +22,7 @@ export function compareInvoices(a, b, order = 'new') {
     if (!aNumber !== !bNumber) return aNumber ? -1 : 1;
     return (order === 'number-desc' ? -byNumber : byNumber) || -byDate || tie;
   }
-  return (order === 'old' ? byDate : -byDate) || byNumber || tie;
+  // Same-day ties follow the date direction: newest first also means highest number first.
+  const numberTie = !aNumber !== !bNumber ? (aNumber ? -1 : 1) : (order === 'old' ? byNumber : -byNumber);
+  return (order === 'old' ? byDate : -byDate) || numberTie || tie;
 }

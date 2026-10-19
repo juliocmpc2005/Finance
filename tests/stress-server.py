@@ -83,7 +83,7 @@ def interrupted(c,state,revision,description,user=None):
         (serve.DATA/'inside-transaction').touch();time.sleep(20)
     return result
 serve.store=interrupted
-serve.ThreadingHTTPServer(('127.0.0.1',serve.PORT),serve.LocalHandler).serve_forever()
+serve.create_server().run()
 """
             launch(script)
             pool=concurrent.futures.ThreadPoolExecutor(max_workers=1)

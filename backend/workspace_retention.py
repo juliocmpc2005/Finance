@@ -8,7 +8,7 @@ TEXT_LIMIT = 50
 DEFAULT = 'adg-original'
 EDIT_FIELDS = ('clientId', 'date', 'description', 'lines', 'notes', 'reason',
                'originalId', 'templateId', 'withholdingRate', 'isExample',
-               'vfEnabled', 'vfExemption')
+               'vfEnabled', 'vfExemption', 'series')
 
 
 def initialize_schema(c):

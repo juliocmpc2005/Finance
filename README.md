@@ -8,7 +8,7 @@ Aplicación local para preparar facturas y gestionar su análisis y cobro. Inter
 npm start
 ```
 
-Abrir http://localhost:4173. Requiere Python 3.10 o posterior y Node.js LTS. Ejecutar `npm install` para instalar Playwright, utilizado para conservar los PDF. En este Mac utiliza Google Chrome; en otro equipo se puede indicar `CHROME_PATH` o instalar Chromium con `npx playwright install chromium`. Los PDF se preparan en el servidor y no envían datos a servicios externos.
+Abrir http://localhost:4173. Requiere Python 3.10 o posterior y Node.js LTS. La primera vez, ejecutar `sh scripts/setup-server.sh`, que crea el entorno `.venv` con el servidor HTTP [Waitress](https://docs.pylonsproject.org/projects/waitress/) (gratuito y de código abierto) y las dependencias de VERI*FACTU. Ejecutar `npm install` para instalar Playwright, utilizado para conservar los PDF. En este Mac utiliza Google Chrome; en otro equipo se puede indicar `CHROME_PATH` o instalar Chromium con `npx playwright install chromium`. Los PDF se preparan en el servidor y no envían datos a servicios externos.
 
 ## Empresas, autónomos y usuarios
 
@@ -38,7 +38,7 @@ Para recuperar la contraseña desde el equipo de los datos:
 python3 manage_users.py reset-password correo@empresa.es
 ```
 
-Pide una nueva contraseña temporal de forma interactiva, revoca sesiones y conserva la desactivación de las cuentas desactivadas. El servidor futuro sigue pendiente de la adaptación HTTP de producción descrita en [deploy/README.md](deploy/README.md).
+Pide una nueva contraseña temporal de forma interactiva, revoca sesiones y conserva la desactivación de las cuentas desactivadas. La publicación en un servidor se describe en [deploy/README.md](deploy/README.md).
 
 ## Descripción y presentación de las facturas
 
@@ -58,13 +58,17 @@ La primera actualización guarda una copia SQLite completa `data/backups/antes-l
 
 En **Nueva factura**, marcar **Factura de ejemplo** permite guardar y crear una muestra con serie anual propia `EJEMPLO-año-número`, independiente por emisor. Las rectificativas de ejemplos usan `EJEMPLO-R`. Se conservan conceptos, descripción, importes, plantilla y permisos del usuario. Al duplicar un ejemplo, el nuevo borrador sigue marcado; se puede desmarcar antes de emitir para crear una factura ordinaria. El cambio de emisor conserva la opción.
 
-Los ejemplos permanecen en Facturas con identificación visible y pueden descargarse como PDF marcado **FACTURA DE EJEMPLO · SIN VALIDEZ FISCAL**. No consumen números ADG ni cuentan en el importe emitido del mes. Quedan excluidos de Análisis, sus exportaciones, pendientes, selecciones de cobro e historial visible; la auditoría completa del servidor conserva la operación. Se ha retirado «Incluir ejemplos» de Análisis. El servidor impide usar VERI*FACTU en un ejemplo o asociarle cobros, ajustes o devoluciones. Tras crear el documento se conserva su clasificación y numeración; para cambiar la muestra se duplica como borrador.
+Los ejemplos permanecen en Facturas con identificación visible y pueden descargarse como PDF marcado **FACTURA DE EJEMPLO · SIN VALIDEZ FISCAL**. No consumen la numeración del emisor ni cuentan en el importe emitido del mes. Quedan excluidos de Análisis, sus exportaciones, pendientes, selecciones de cobro e historial visible; la auditoría completa del servidor conserva la operación. Se ha retirado «Incluir ejemplos» de Análisis. El servidor impide usar VERI*FACTU en un ejemplo o asociarle cobros, ajustes o devoluciones. Tras crear el documento se conserva su clasificación y numeración; para cambiar la muestra se duplica como borrador.
 
-## Numeración ADG
+## Numeración y series
 
-Las nuevas emisiones usan `ADG-trimestreº-año-número`, por ejemplo `ADG-4º-2026-01`. El trimestre procede de la fecha de expedición. El contador es anual por emisor: continúa entre trimestres y vuelve a 01 al cambiar de año. Se muestran al menos dos cifras (01…99, 100…). Las rectificativas tienen serie separada `ADG-R-trimestreº-año-número`.
+Cada emisor tiene una serie por defecto con sus iniciales: arquitecturadeguardia usa `ADG` y, por ejemplo, «Pepe Sánchez» usa `PS`. Las iniciales se toman de cada palabra del nombre fiscal, sin «de», «la», «y», «S.L.» ni otras partículas. **Configuración → Serie por defecto** permite fijar otras (de 1 a 10 letras o cifras); vacía, se vuelven a calcular del nombre, de modo que cambiar el nombre también cambia la serie.
 
-Las emisiones previas conservan sus números y documentos. Al calcular el siguiente se tienen en cuenta números ADG de todos los trimestres, series anteriores F/R, históricos numéricos, antiguas series VF-F/VF-R y los números guardados en el historial de renumeración. Las nuevas facturas ordinarias y de pruebas comparten la reserva de números dentro del emisor para no repetir identificadores; las de pruebas siguen excluidas de las cifras y cobros habituales. Los documentos VERI*FACTU previamente sellados conservan su presentación; las nuevas emisiones guardan `presentationSnapshot` versión 3 con la visibilidad del número.
+Las nuevas emisiones usan `INICIALES-trimestreº-año-número`, por ejemplo `ADG-4º-2026-01` o `PS-4º-2026-01`. El trimestre procede de la fecha de expedición. El contador es anual por emisor: continúa entre trimestres y vuelve a 01 al cambiar de año. Se muestran al menos dos cifras (01…99, 100…). Las rectificativas tienen serie separada `INICIALES-R-trimestreº-año-número`.
+
+En **Nueva factura → Serie** se puede escribir otra serie completa cuando la casilla VERI*FACTU no está marcada (hasta 40 letras, cifras, º y los signos `- / . _`, sin espacios; `EJEMPLO` está reservada). Cada serie lleva su propio contador: `OBRA` produce `OBRA-01`, `OBRA-02`…; una serie con trimestre, como `PS-1º-2026`, comparte el contador anual de `PS`. El borrador guarda la serie aunque esté incompleta; se comprueba al revisar y al emitir. Al marcar VERI*FACTU, la serie vuelve a la predeterminada y queda bloqueada. Duplicar conserva la serie escrita; las rectificativas y los traslados a otro emisor vuelven a la serie por defecto.
+
+Las emisiones previas conservan sus números y documentos. Al calcular el siguiente se tienen en cuenta los números de la serie en todos los trimestres y, para ADG, series anteriores F/R, históricos numéricos, antiguas series VF-F/VF-R y los números guardados en el historial de renumeración. Las nuevas facturas ordinarias y de pruebas comparten la reserva de números dentro del emisor para no repetir identificadores; las de pruebas siguen excluidas de las cifras y cobros habituales. Los documentos VERI*FACTU previamente sellados conservan su presentación; las nuevas emisiones guardan `presentationSnapshot` versión 3 con la visibilidad del número.
 
 ## Cambiar el número de una factura
 
@@ -121,7 +125,7 @@ Para trasladar la facturación a otra instalación se puede utilizar el ZIP. Par
 
 El perfil permite definir una retención predeterminada y ajustar el porcentaje en cada borrador. Se calcula sobre la base y se descuenta del importe a cobrar; PDF, listado, Análisis y reparto de cobros utilizan ese mismo importe neto. La configuración no decide por sí sola qué tratamiento fiscal corresponde a una operación.
 
-Al emitir se conservan los datos y la versión de plantilla y se archiva una representación imprimible independiente, con estilos e imágenes incorporados. **Descargar PDF conservado** genera el PDF en el servidor la primera vez y reutiliza después los mismos bytes. Cambiar el nombre, logo, IBAN o diseño predeterminado no modifica ese documento. La renumeración genera otra versión y **Documentos anteriores** permite descargar las previas. Para documentos históricos sin archivo previo, la primera descarga conserva su representación disponible sin modificar el estado financiero. Los históricos importados siguen identificados como representaciones de datos, no sustituyen el original.
+Al emitir se conservan los datos y la versión de plantilla y se archiva una representación imprimible independiente, con estilos e imágenes incorporados. **Descargar PDF** genera el PDF en el servidor la primera vez y reutiliza después los mismos bytes. Cambiar el nombre, logo, IBAN o diseño predeterminado no modifica ese documento. La renumeración genera otra versión y **Documentos anteriores** permite descargar las previas. Para documentos históricos sin archivo previo, la primera descarga conserva su representación disponible sin modificar el estado financiero. Los históricos importados siguen identificados como representaciones de datos, no sustituyen el original.
 
 
 Logo y firma originales extraídos del Word facilitado por el usuario, datos fiscales y bancarios confirmados, honorarios y total calculado automáticamente en letras. La muestra está en Configuración y en http://localhost:4173/?view=template. No consume numeración ni se incorpora al listado.
@@ -142,10 +146,10 @@ Las pruebas de navegador necesitan Google Chrome instalado; `CHROME_PATH` permit
 Las pruebas de fallos también simulan respuestas perdidas, reintentos, errores de escritura y copias, archivos incompletos, conexiones lentas y cinco navegadores guardando a la vez. Para la prueba adicional de volumen y terminación forzada, exclusivamente en datos temporales:
 
 ```sh
-python3 tests/stress-server.py
+.venv/bin/python tests/stress-server.py
 ```
 
-El informe de resultados, dimensionamiento y condiciones pendientes antes de publicar está en [reviews/2026-10-17-fallos-y-capacidad.md](reviews/2026-10-17-fallos-y-capacidad.md). El servidor actual se mantiene para desarrollo y uso local: antes de exponerlo públicamente es necesaria la adaptación del motor HTTP descrita en [deploy/README.md](deploy/README.md).
+El informe de resultados, dimensionamiento y condiciones pendientes antes de publicar está en [reviews/2026-10-17-fallos-y-capacidad.md](reviews/2026-10-17-fallos-y-capacidad.md). El servidor HTTP es Waitress, el mismo en el Mac y en el servidor; los pasos de publicación están en [deploy/README.md](deploy/README.md).
 # Finance
 
 

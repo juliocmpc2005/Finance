@@ -1,5 +1,5 @@
 [Unit]
-# Solo ensayo privado: sustituir ExecStart por el servidor de producción antes de publicar.
+# serve.py arranca Waitress (instalado en .venv por scripts/setup-server.sh).
 Description=arquitecturadeguardia Finance
 After=network.target
 
@@ -14,6 +14,8 @@ Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/adg-finance/browsers
 Environment=ADG_DATA_DIR=/var/lib/adg-finance
 Environment=ADG_PUBLIC_ORIGIN=https://finance.empresa.es
 Restart=on-failure
+# SIGTERM deja terminar las peticiones en curso (hasta 5 s) antes de salir.
+TimeoutStopSec=15
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true

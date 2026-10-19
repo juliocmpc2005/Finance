@@ -186,8 +186,8 @@ class FiscalApiTests(unittest.TestCase):
         status,result,_=self.root.request('/api/command',{'revision':self.state()['revision'],'command':{'type':'issue_invoice','invoiceId':ident,'operationId':uuid.uuid4().hex}},headers=self.headers)
         self.assertEqual(status,200,result);return next(i for i in result['state']['invoices'] if i['id']==ident)
     def test_checkbox_false_works_normally_true_locks_and_restore_cannot_erase_it(self):
-        normal=self.issue(False);self.assertRegex(normal['number'],r'^ADG-[1-4]º-20\d{2}-\d{2,}$');self.assertFalse(normal['presentationSnapshot']['showNumber']);self.assertNotIn('verifactu',normal)
-        before=self.state();inv=self.issue();self.assertRegex(inv['number'],r'^ADG-[1-4]º-20\d{2}-\d{2,}$');self.assertTrue(inv['presentationSnapshot']['showNumber']);self.assertTrue(inv['vfTest']);self.assertNotEqual(inv['number'],normal['number']);self.assertIn('qrDataUrl',inv['verifactu'])
+        normal=self.issue(False);self.assertRegex(normal['number'],r'^EQ-[1-4]º-20\d{2}-\d{2,}$');self.assertFalse(normal['presentationSnapshot']['showNumber']);self.assertNotIn('verifactu',normal)
+        before=self.state();inv=self.issue();self.assertRegex(inv['number'],r'^EQ-[1-4]º-20\d{2}-\d{2,}$');self.assertTrue(inv['presentationSnapshot']['showNumber']);self.assertTrue(inv['vfTest']);self.assertNotEqual(inv['number'],normal['number']);self.assertIn('qrDataUrl',inv['verifactu'])
         for typ,extra in [('rename_invoice',{'invoiceId':inv['id'],'number':'changed'}),('restore',{'state':before['state']})]:
             status,result,_=self.root.request('/api/command',{'revision':self.state()['revision'],'command':{'type':typ,**extra}},headers=self.headers);self.assertEqual(status,400,result)
         records=self.root.request('/api/verifactu/records',headers=self.headers)[1]['records'];self.assertEqual(len(records),1);self.assertEqual(records[0]['status'],'pending')

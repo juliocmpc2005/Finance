@@ -5,6 +5,7 @@ from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 import re
+import unicodedata
 
 class DomainError(ValueError): pass
 
@@ -53,6 +54,10 @@ def check_state_shape(state):
         if not isinstance(invoice.get('lines'),list) or any(not isinstance(line,dict) or not isinstance(line.get('description',''),str) for line in invoice['lines']):raise DomainError('Los conceptos de la factura no son válidos.')
         if invoice.get('number') is not None and not isinstance(invoice['number'],str):raise DomainError('El número de factura debe ser texto.')
         if invoice.get('historicalTotals') is not None and not isinstance(invoice['historicalTotals'],dict):raise DomainError('Los importes históricos no son válidos.')
+        # Drafts may hold an unfinished series; issue_invoice enforces the format.
+        if invoice.get('series') is not None and (not isinstance(invoice['series'],str) or len(invoice['series'])>100):raise DomainError('La serie de la factura no es válida.')
+    prefix=state['company'].get('seriesPrefix')
+    if prefix and (not isinstance(prefix,str) or not PREFIX_PATTERN.fullmatch(prefix)):raise DomainError('La serie por defecto admite de 1 a 10 letras o cifras.')
     return state
 
 def active(item, cutoff=None):
@@ -72,9 +77,36 @@ def invoice_number_key(value):
 def invoice_numbers(invoice):
     return [invoice.get('number','')] + [h['oldNumber'] for h in invoice.get('numberHistory',[])]
 
+# Words skipped when deriving the default series from the issuer name (Pepe Sánchez → PS).
+SERIES_STOPWORDS={'de','del','la','las','el','los','y','e','i','en','cia','sl','sa','slu','sll','slp','scp','sc','cb','sociedad','limitada','anonima','cooperativa'}
+SERIES_PATTERN=re.compile(r'[A-ZÑ0-9](?:[A-ZÑ0-9º/._-]{0,38}[A-ZÑ0-9º])?')
+PREFIX_PATTERN=re.compile(r'[A-ZÑ0-9]{1,10}')
+QUARTERLY_SERIES=re.compile(r'(.+)-[1-4]º-(20\d\d)')
+
+def series_initials(name):
+    text=unicodedata.normalize('NFKD',str(name or '')).replace('.','')
+    words=re.findall(r'[A-Za-z0-9]+',''.join(ch for ch in text if not unicodedata.combining(ch)))
+    return ''.join(word[0] for word in words if word.lower() not in SERIES_STOPWORDS).upper()[:6] or 'F'
+
+def series_error(value):
+    if not isinstance(value,str) or not SERIES_PATTERN.fullmatch(value):
+        return 'La serie admite hasta 40 letras, cifras, º y los signos - / . _, sin espacios.'
+    if value.startswith('EJEMPLO'):return 'La serie EJEMPLO está reservada a las facturas de ejemplo.'
+
+def default_series_prefix(state):
+    company=state.get('company') or {}
+    if company.get('seriesPrefix'):return company['seriesPrefix']
+    return 'ADG' if state.get('emitterId','adg-original')=='adg-original' else series_initials(company.get('name'))
+
+def invoice_series(state,invoice):
+    """A custom series applies only without VERI*FACTU; otherwise the issuer default with quarter and year."""
+    if invoice.get('series') and not invoice.get('vfEnabled'):return invoice['series']
+    year=invoice['date'][:4];quarter=(int(invoice['date'][5:7])-1)//3+1
+    return f"{default_series_prefix(state)}{'-R' if invoice.get('originalId') else ''}-{quarter}º-{year}"
+
 def next_invoice_number(state,invoice):
     require_date(invoice.get('date'))
-    year=invoice['date'][:4];quarter=(int(invoice['date'][5:7])-1)//3+1
+    year=invoice['date'][:4]
     if invoice.get('isExample'):
         series='EJEMPLO-R' if invoice.get('originalId') else 'EJEMPLO';maximum=0
         for item in state['invoices']:
@@ -83,20 +115,29 @@ def next_invoice_number(state,invoice):
                 match=re.fullmatch(re.escape(series)+'-'+year+r'-(\d+)',str(value or '').strip().upper())
                 if match:maximum=max(maximum,int(match[1]))
         return f'{series}-{year}-{maximum+1:02d}'
-    rect=bool(invoice.get('originalId'));series='ADG-R' if rect else 'ADG';legacy='R' if rect else 'F';maximum=0
-    # One annual counter per issuer/type, across quarters and experimental flags.
+    series=invoice_series(state,invoice);maximum=0
+    # One counter per series. Quarterly series (PS-4º-2026) count annually across quarters.
     # All historical names remain reserved, including numbers changed manually.
-    for item in state['invoices']:
-        if item.get('status')!='issued' or item.get('isExample'):continue
-        for value in invoice_numbers(item):
+    quarterly=QUARTERLY_SERIES.fullmatch(series)
+    if quarterly:
+        prefix,year=quarterly[1],quarterly[2]
+        pattern=re.compile(re.escape(prefix)+r'-[1-4]º-'+year+r'-(\d+)')
+        legacy=('R' if prefix=='ADG-R' else 'F') if prefix in ('ADG','ADG-R') else None
+    else:
+        pattern=re.compile(re.escape(series)+r'-(\d+)');legacy=None
+    issued=[value for item in state['invoices'] if item.get('status')=='issued' and not item.get('isExample') for value in invoice_numbers(item)]
+    for value in issued:
+        match=pattern.fullmatch(str(value or '').strip().upper().replace(' ','').replace('°','º'))
+        if match:maximum=max(maximum,int(match[1]))
+        if legacy:
             key=invoice_number_key(value)
-            match=re.fullmatch(r'(ADG(?:-R)?):([1-4]):(20\d\d):(\d+)',key)
-            if match and match[1]==series and match[3]==year:maximum=max(maximum,int(match[4]))
             match=re.fullmatch(r'([A-Z]+):(20\d\d):(\d+)',key)
             if match and match[1]==legacy and match[2]==year:maximum=max(maximum,int(match[3]))
             match=re.fullmatch(r'VF-([FR])-(20\d\d)-(\d+)',key)
             if match and match[1]==legacy and match[2]==year:maximum=max(maximum,int(match[3]))
-    return f'{series}-{quarter}º-{year}-{maximum+1:02d}'
+    taken={invoice_number_key(value) for value in issued};number=maximum+1
+    while invoice_number_key(f'{series}-{number:02d}') in taken:number+=1
+    return f'{series}-{number:02d}'
 
 def validate_description(invoice):
     description=invoice.get('description','')
@@ -107,6 +148,8 @@ def issue_invoice(state,invoice_id):
     if not invoice or invoice.get('status')!='draft':raise DomainError('Selecciona un borrador para emitir.')
     if invoice.get('isExample') and invoice.get('vfEnabled'):raise DomainError('Una factura de ejemplo no puede utilizar VERI*FACTU.')
     validate_description(invoice)
+    if invoice.get('vfEnabled') or invoice.get('isExample'):invoice.pop('series',None)
+    if invoice.get('series') and series_error(invoice['series']):raise DomainError(series_error(invoice['series']))
     original=next((i for i in state['invoices'] if i['id']==invoice.get('originalId')),None)
     if original and bool(original.get('isExample'))!=bool(invoice.get('isExample')):raise DomainError('Una rectificativa debe conservar la condición de ejemplo de su factura original.')
     if original and bool(original.get('vfTest'))!=bool(invoice.get('vfEnabled')):raise DomainError('Una rectificativa debe usar el mismo entorno que su factura original.')

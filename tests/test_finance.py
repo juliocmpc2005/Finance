@@ -1,6 +1,6 @@
 import unittest
 from copy import deepcopy
-from backend.finance import initialize,command,balances,available,DomainError,validate_state,today,next_invoice_number,invoice_number_key
+from backend.finance import initialize,command,balances,available,DomainError,validate_state,today,next_invoice_number,invoice_number_key,series_initials,issue_invoice
 from backend.importer import parse_xlsx,import_commit,number_key
 from pathlib import Path
 
@@ -14,6 +14,42 @@ def payment(value=10000,alloc=None):return {'type':'payment','amountCents':value
 def apply(s,c):return command(s,c)[0]
 
 class FinanceTests(unittest.TestCase):
+    def test_issuer_initials_and_custom_series(self):
+        for name,expected in [('Pepe Sánchez','PS'),('pepito José','PJ'),('arquitecturadeguardia, S.L.','A'),('Estudio de la Torre y Asociados S.L.','ETA'),('Ñandú Diseño, S.A.','ND'),('...','F')]:
+            self.assertEqual(series_initials(name),expected)
+        other={'emitterId':'otro','company':{'name':'Pepe Sánchez'},'invoices':[]}
+        self.assertEqual(next_invoice_number(other,{'date':'2026-10-19'}),'PS-4º-2026-01')
+        self.assertEqual(next_invoice_number(other,{'date':'2026-10-19','originalId':'x'}),'PS-R-4º-2026-01')
+        self.assertEqual(next_invoice_number({'invoices':[],'company':{'name':'arquitecturadeguardia, S.L.'}},{'date':'2026-10-19'}),'ADG-4º-2026-01')
+        other['company']['seriesPrefix']='PSA';self.assertEqual(next_invoice_number(other,{'date':'2026-10-19'}),'PSA-4º-2026-01');del other['company']['seriesPrefix']
+        other['invoices']=[{'status':'issued','number':'PS-3º-2026-07'},{'status':'issued','number':'OBRA-2026-04'},{'status':'issued','number':'OBRA-2026-04-03','numberHistory':[{'oldNumber':'OBRA-05'}]},{'status':'draft','number':'OBRA-99'}]
+        # Quarterly series share the annual counter; every other series counts on its own.
+        self.assertEqual(next_invoice_number(other,{'date':'2026-10-19'}),'PS-4º-2026-08')
+        self.assertEqual(next_invoice_number(other,{'date':'2026-10-19','series':'PS-1º-2026'}),'PS-1º-2026-08')
+        self.assertEqual(next_invoice_number(other,{'date':'2026-10-19','series':'OBRA'}),'OBRA-06')
+        self.assertEqual(next_invoice_number(other,{'date':'2026-10-19','series':'OBRA-2026'}),'OBRA-2026-05')
+        self.assertEqual(next_invoice_number(other,{'date':'2026-10-19','series':'OBRA-2026-04'}),'OBRA-2026-04-04')
+        self.assertEqual(next_invoice_number(other,{'date':'2026-10-19','series':'NUEVA'}),'NUEVA-01')
+        self.assertEqual(next_invoice_number(other,{'date':'2026-10-19','series':'OBRA','vfEnabled':True}),'PS-4º-2026-08')
+        # A number already taken outside the series pattern is skipped instead of repeated.
+        self.assertEqual(next_invoice_number({'emitterId':'otro','company':{'name':'Pepe'},'invoices':[{'status':'issued','number':'X-1'}]},{'date':'2026-10-19','series':'X'}),'X-02')
+        s=fixture()
+        for value in [7,'A'*101]:
+            bad=deepcopy(s);bad['invoices'].append({'id':'bad','status':'draft','lines':[],'series':value})
+            with self.assertRaises(DomainError):validate_state(bad)
+        s['clients'][0].update(nif='B00000001',address='Madrid')
+        for value in ['ob ra','obra','-OBRA','OBRA-','EJEMPLO-1','A'*41]:
+            # An unfinished draft is stored, but cannot be issued with that series.
+            bad=deepcopy(s);bad['invoices'].append({'id':'bad','status':'draft','clientId':'a','date':'2026-10-19','lines':[{'description':'Obra','qty':1,'price':100,'tax':21}],'series':value});validate_state(bad)
+            with self.assertRaisesRegex(DomainError,'serie'):issue_invoice(bad,'bad')
+        for value in ['', 'ABCDEFGHIJK', 'ps', 'P-S']:
+            bad=deepcopy(s);bad['company']['seriesPrefix']=value
+            if value:
+                with self.assertRaises(DomainError):validate_state(bad)
+            else:validate_state(bad)
+        s['invoices'].append({'id':'d','status':'draft','clientId':'a','date':'2026-10-19','lines':[{'description':'Obra','qty':1,'price':100,'tax':21}],'series':'OBRA','vfEnabled':True})
+        validate_state(s);issued=issue_invoice(s,'d');self.assertEqual(issued['number'],'ADG-4º-2026-01');self.assertNotIn('series',issued)
+
     def test_examples_are_excluded_from_balances_and_normal_numbering(self):
         s=fixture();example=deepcopy(s['invoices'][0]);example.update(id='example',number='EJEMPLO-2026-01',isExample=True);s['invoices'].append(example)
         self.assertNotIn('example',balances(s));validate_state(s)

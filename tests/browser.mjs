@@ -20,7 +20,7 @@ try {
  assert.equal(await page.locator('.invoice-description p').textContent(),description);
  assert.equal(await page.locator('.adg-document-heading h2').count(),0);
  assert.ok((await page.locator('.paper-total').innerText()).includes('121,61'));
- await page.getByRole('button',{name:'Emitir factura'}).click();await page.getByRole('button',{name:'Imprimir / PDF'}).waitFor();
+ await page.getByRole('button',{name:'Emitir factura'}).click();await page.getByRole('link',{name:'Descargar PDF',exact:true}).waitFor();
  const issued=await page.evaluate(async()=>{const data=await fetch('/api/state').then(r=>r.json());return data.state.invoices.find(i=>i.description?.includes('Proyecto de reforma <Trevenez>')&&i.status==='issued');});
  assert.equal(issued.number,'ADG-2º-2027-01');assert.equal(issued.description,description);assert.equal(issued.presentationSnapshot.showNumber,false);
  assert.ok(!(await page.locator('.invoice-paper').innerText()).includes(issued.number));

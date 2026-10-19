@@ -106,7 +106,7 @@ class EmitterTests(unittest.TestCase):
         self.root.emitter=self.two['id'];self.issue(self.root);client.emitter=self.two['id'];self.assertEqual(client.state()['state']['invoices'],[]);own=self.issue(client)
         self.assertEqual([i['id'] for i in client.state()['state']['invoices']],[own['id']]);snapshot=client.state();snapshot['state']['company']['name']='No permitido';self.assertEqual(client.request('/api/state',snapshot)[0],403)
     def test_numbering_and_revisions_are_independent(self):
-        self.root.emitter=self.one['id'];one=self.issue(self.root);first=self.root.state();self.root.emitter=self.two['id'];two=self.issue(self.root);self.assertEqual(one['number'],two['number']);self.root.emitter=self.one['id'];self.assertEqual(self.root.state(),first)
+        self.root.emitter=self.one['id'];one=self.issue(self.root);first=self.root.state();self.root.emitter=self.two['id'];two=self.issue(self.root);self.assertRegex(one['number'],r'^E[0-9A-F]-[1-4]º-20\d\d-01$');self.assertRegex(two['number'],r'^E[0-9A-F]-[1-4]º-20\d\d-01$');self.root.emitter=self.one['id'];self.assertEqual(self.root.state(),first)
     def test_other_issuer_invoice_cannot_receive_a_payment(self):
         self.root.emitter=self.one['id'];invoice=self.issue(self.root);before=self.root.state();self.root.emitter=self.two['id']
         status,_,_=self.root.command({'type':'payment','amountCents':100,'date':today(),'payer':'Prueba','account':'Banco','allocations':[{'invoiceId':invoice['id'],'amountCents':100}]});self.assertEqual(status,403);self.assertEqual(self.root.state()['state']['payments'],[])

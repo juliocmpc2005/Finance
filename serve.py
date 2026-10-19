@@ -1,11 +1,14 @@
-"""ADG Finance: static UI + loopback-only SQLite persistence and collections API."""
-from http.server import ThreadingHTTPServer as BaseThreadingHTTPServer, SimpleHTTPRequestHandler
+"""ADG Finance: static UI + loopback-only SQLite persistence and collections API.
+
+Served as a WSGI application by Waitress: one process, several threads, so the
+SQLite lock and the VERI*FACTU worker keep working as a single installation."""
+from http import HTTPStatus
 from pathlib import Path
-from urllib.parse import urlparse, unquote, parse_qs
-from threading import RLock,BoundedSemaphore
+from urllib.parse import urlparse, unquote, parse_qs, quote
+from threading import RLock
 from contextlib import contextmanager, closing
 from copy import deepcopy
-import sqlite3, json, os, sys, traceback, base64, tempfile, shutil, hashlib, re
+import sqlite3, json, os, sys, traceback, base64, tempfile, hashlib, re, mimetypes, signal, logging
 from uuid import UUID
 from zipfile import ZipFile, ZIP_DEFLATED, is_zipfile, BadZipFile
 from backend.finance import initialize, validate_state, command, DomainError, now, uid
@@ -238,22 +241,56 @@ def read_restore(path):
     except (BadZipFile,RuntimeError,UnicodeDecodeError):raise DomainError('La copia está dañada, cifrada o incompleta. Selecciona otra copia.')
 
 CONNECTION_TIMEOUT=30
-MAX_CONNECTIONS=32
+# Browsers keep up to six idle HTTP/1.1 connections each; waiting connections use no application thread.
+MAX_CONNECTIONS=200
+THREADS=8
+MAX_BODY=260_000_000
+DIST=(ROOT/'dist').resolve()
 
-class ThreadingHTTPServer(BaseThreadingHTTPServer):
-    request_queue_size=64
-    def __init__(self,*args,**kwargs):
-        self._slots=BoundedSemaphore(MAX_CONNECTIONS);super().__init__(*args,**kwargs)
-    def process_request(self,request,address):
-        if not self._slots.acquire(blocking=False):
-            try:request.sendall(b'HTTP/1.0 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\nRetry-After: 1\r\n\r\n')
-            except OSError:pass
-            self.shutdown_request(request);return
-        try:super().process_request(request,address)
-        except Exception:self._slots.release();raise
-    def process_request_thread(self,request,address):
-        try:super().process_request_thread(request,address)
-        finally:self._slots.release()
+def server_settings(port=None,**overrides):
+    """Waitress buffers each request completely before it reaches the application."""
+    settings=dict(host='127.0.0.1',port=PORT if port is None else port,threads=THREADS,connection_limit=MAX_CONNECTIONS,
+        channel_timeout=CONNECTION_TIMEOUT,cleanup_interval=5,max_request_body_size=MAX_BODY,ident='',expose_tracebacks=False)
+    if PUBLIC_ORIGIN:
+        # Behind Caddy every connection comes from 127.0.0.1; the login limit needs the client address it forwards.
+        settings.update(trusted_proxy='127.0.0.1',trusted_proxy_count=1,trusted_proxy_headers={'x-forwarded-for'},clear_untrusted_proxy_headers=True)
+    settings.update(overrides);return settings
+
+def create_server(port=None,**overrides):
+    try:from waitress.server import create_server as waitress_server
+    except ImportError:raise SystemExit('Falta el servidor Waitress. Ejecuta: sh scripts/setup-server.sh')
+    return waitress_server(application,**server_settings(port,**overrides))
+
+def stop_server(server):
+    """Closes every connection from inside the server loop, which then ends."""
+    from waitress import wasyncore
+    server.trigger.pull_trigger(lambda:wasyncore.close_all(server._map));server.task_dispatcher.shutdown()
+
+def static_file(path):
+    """A file inside dist/, or None. Directories serve their index.html and are never listed."""
+    relative=unquote(path)
+    if '\x00' in relative:return None
+    target=(DIST/relative.lstrip('/')).resolve()
+    if not target.is_relative_to(DIST):return None
+    if target.is_dir():target=target/'index.html'
+    elif path.endswith('/'):return None
+    return target if target.is_file() else None
+
+class RequestHeaders:
+    """Case-insensitive request headers rebuilt from the WSGI environ."""
+    def __init__(self,environ):
+        self._values={}
+        for key,value in environ.items():
+            if key.startswith('HTTP_'):name=key[5:]
+            elif key in ('CONTENT_TYPE','CONTENT_LENGTH') and value!='':name=key
+            else:continue
+            self._values[name.replace('_','-').lower()]=value
+    def get(self,name,default=None):return self._values.get(name.lower(),default)
+    def get_all(self,name,default=None):
+        value=self.get(name);return default if value is None else [value]
+
+class ResponseBody(list):
+    write=list.append
 
 def deferred_response(method):
     def run(self):
@@ -274,13 +311,39 @@ def deferred_response(method):
                         traceback.print_exc();self._write_json({'error':'No se ha podido descargar el archivo. Revisa los datos y la copia de seguridad.'},503)
     return run
 
-class LocalHandler(SimpleHTTPRequestHandler):
-    def __init__(self,*args,**kwargs):super().__init__(*args,directory=str(ROOT/'dist'),**kwargs)
-    def setup(self):
-        self.request.settimeout(CONNECTION_TIMEOUT);super().setup()
+class LocalHandler:
+    """One HTTP request. Keeps the former http.server interface so the routes below are unchanged."""
+    def __init__(self,environ):
+        self.environ=environ;self.command=environ['REQUEST_METHOD']
+        # The raw target, still percent-encoded, as http.server provided it.
+        query=environ.get('QUERY_STRING','')
+        self.path=environ.get('REQUEST_URI') or quote(environ.get('PATH_INFO',''))+('?'+query if query else '')
+        self.headers=RequestHeaders(environ);self.client_address=(environ.get('REMOTE_ADDR',''),)
+        self.rfile=environ['wsgi.input'];self.wfile=ResponseBody()
+        self._status=None;self._response_headers=[];self._stream=None;self._response_started=False;self.close_connection=False
+    def send_response(self,code):
+        if self._stream:self._stream.close();self._stream=None
+        self._status=code;self._response_headers=[];self.wfile.clear()
+    def send_header(self,name,value):self._response_headers.append((name,str(value)))
     def end_headers(self):
         self._response_started=True
-        self.send_header('Cache-Control','no-store, no-cache, must-revalidate');self.send_header('X-Content-Type-Options','nosniff');self.send_header('Referrer-Policy','same-origin');self.send_header('X-Frame-Options','DENY');self.send_header('Content-Security-Policy',"frame-ancestors 'none'; object-src 'none'; base-uri 'self'");super().end_headers()
+        self.send_header('Cache-Control','no-store, no-cache, must-revalidate');self.send_header('X-Content-Type-Options','nosniff');self.send_header('Referrer-Policy','same-origin');self.send_header('X-Frame-Options','DENY');self.send_header('Content-Security-Policy',"frame-ancestors 'none'; object-src 'none'; base-uri 'self'")
+    def send_error(self,code):
+        body=f'{code} {HTTPStatus(code).phrase}'.encode()
+        self.send_response(code);self.send_header('Content-Type','text/plain; charset=utf-8');self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
+    def send_static(self):
+        target=static_file(urlparse(self.path).path)
+        if not target:return self.send_error(404)
+        body=target.read_bytes()
+        self.send_response(200);self.send_header('Content-Type',mimetypes.guess_type(target.name)[0] or 'application/octet-stream');self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
+    def finish(self,start_response):
+        if self._status is None:self._write_json({'error':'No se ha podido completar la petición.'},500)
+        start_response(f'{self._status} {HTTPStatus(self._status).phrase}',self._response_headers)
+        if self.command=='HEAD':
+            if self._stream:self._stream.close()
+            return []
+        if self._stream:return self.environ['wsgi.file_wrapper'](self._stream,65536)
+        return self.wfile
     def respond(self,writer):
         if getattr(self,'_defer_response',False):self._pending_response=writer;return
         return writer()
@@ -371,7 +434,7 @@ class LocalHandler(SimpleHTTPRequestHandler):
                     account=self.account_user(c)
                     if path=='/reference.js' or path.startswith('/assets/adg-'):emitters.context(c,account,emitters.DEFAULT)
                 except auth.AccessError as error:self.send_error(error.status);return
-        return super().do_HEAD()
+        return self.send_static()
     @deferred_response
     def do_GET(self):
         if not self.allowed():return self.send_json({'error':'Acceso local no autorizado.'},403)
@@ -383,7 +446,7 @@ class LocalHandler(SimpleHTTPRequestHandler):
                         account=self.account_user(c)
                         if path=='/reference.js' or path.startswith('/assets/adg-'):emitters.context(c,account,emitters.DEFAULT)
                     except auth.AccessError as error:return self.send_json({'error':str(error)},error.status)
-            return super().do_GET()
+            return self.send_static()
         try:
             with LOCK,connect() as c:
                 if path=='/api/auth/session':
@@ -477,14 +540,19 @@ class LocalHandler(SimpleHTTPRequestHandler):
         if zipped:
             data['_documentIndex']=[documents.metadata(row) for row in archived]
             data['_attachmentIndex']=files
-            with tempfile.TemporaryFile() as output:
+            output=tempfile.TemporaryFile()
+            try:
                 with ZipFile(output,'w',ZIP_DEFLATED) as archive:
                     archive.writestr('state.json',json.dumps(data,ensure_ascii=False))
                     for meta in files:archive.write(DATA/'attachments'/meta['id'],'attachments/'+meta['id'])
                     for document in archived:
                         archive.writestr('documents/'+document['id']+'.html',document['html'])
                         if document['pdf'] is not None:archive.writestr('documents/'+document['id']+'.pdf',document['pdf'])
-                size=output.tell();output.seek(0);self.send_response(200);self.send_header('Content-Type','application/zip');self.send_header('Content-Disposition',f'attachment; filename="ADG-Finance-{now()[:10]}.zip"');self.send_header('Content-Length',str(size));self.end_headers();shutil.copyfileobj(output,self.wfile)
+                size=output.tell();output.seek(0);self.send_response(200);self.send_header('Content-Type','application/zip');self.send_header('Content-Disposition',f'attachment; filename="ADG-Finance-{now()[:10]}.zip"');self.send_header('Content-Length',str(size));self.end_headers()
+                # Streamed from the temporary file; the file wrapper closes it once sent.
+                self._stream=output;output=None
+            finally:
+                if output:output.close()
         else:
             data['_documents']=[{**documents.metadata(row),'html':row['html'],'pdf':base64.b64encode(row['pdf']).decode() if row['pdf'] is not None else None} for row in archived]
             data['_attachments']=[{**meta,'data':base64.b64encode((DATA/'attachments'/meta['id']).read_bytes()).decode()} for meta in files]
@@ -684,14 +752,24 @@ class LocalHandler(SimpleHTTPRequestHandler):
         finally:
             if not committed:
                 for target in created_files:target.unlink(missing_ok=True)
-    def log_message(self,format,*args):
-        if '404' in args or '500' in args:super().log_message(format,*args)
+
+def application(environ,start_response):
+    """WSGI entry point."""
+    request=LocalHandler(environ)
+    handler={'GET':request.do_GET,'POST':request.do_POST,'HEAD':request.do_HEAD}.get(request.command)
+    if handler:handler()
+    else:request.send_error(501)
+    return request.finish(start_response)
 
 def re_uuid(s):
     import re
     return isinstance(s,str) and bool(re.fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',s))
 if __name__=='__main__':
+    logging.basicConfig(format='%(asctime)s %(levelname)s %(name)s: %(message)s')
+    server=create_server()
+    # systemd stops the service with SIGTERM: finish the requests in progress before exiting.
+    signal.signal(signal.SIGTERM,lambda *_:sys.exit(0))
     print(f'arquitecturadeguardia Finance · http://localhost:{PORT}',flush=True)
     print(f'Datos locales: {DATA}',flush=True)
     verifactu.start_worker(connect,LOCK,DATA)
-    ThreadingHTTPServer(('127.0.0.1',PORT),LocalHandler).serve_forever()
+    server.run()

@@ -5,7 +5,7 @@ from .finance import now, today,check_state_shape,initialize,DomainError
 
 LEDGER=['payments','allocations','adjustments','refunds','paymentAdjustments','importBatches']
 OWNERSHIP=['ownerId','createdByUserId','issuedByUserId']
-DRAFT_FIELDS=['clientId','date','description','lines','notes','reason','originalId','templateId','withholdingRate','isExample','vfEnabled','vfExemption']
+DRAFT_FIELDS=['clientId','date','description','lines','notes','reason','originalId','templateId','withholdingRate','isExample','vfEnabled','vfExemption','series']
 
 
 def adopt_existing(state,user_id):

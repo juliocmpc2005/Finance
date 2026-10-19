@@ -42,7 +42,7 @@ def move(c, source, target, source_user, target_user, invoice_id):
 
     for key in ['documentId', 'issuedAt', 'issuedByUserId', 'clientSnapshot', 'companySnapshot',
                 'templateSnapshot', 'presentationSnapshot', 'numberHistory', 'source', 'imported', 'importBatchId',
-                'historicalTotals', 'isTemplateSample', 'originalId']:
+                'historicalTotals', 'isTemplateSample', 'originalId', 'series']:
         moved.pop(key, None)
     moved.update(emitterId=target_user['emitterId'], updatedAt=now(),
                  templateId=target['company'].get('defaultTemplateId') or

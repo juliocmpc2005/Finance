@@ -16,8 +16,15 @@ test('invoice numbers use numeric ordering and unnumbered drafts stay last', () 
 });
 
 test('emission dates sort in both directions with stable ties', () => {
-  assert.deepEqual(ordered('new'), ['draft', 'one', 'two', 'ten']);
+  assert.deepEqual(ordered('new'), ['draft', 'two', 'one', 'ten']);
   assert.deepEqual(ordered('old'), ['ten', 'one', 'two', 'draft']);
+});
+
+test('same-day invoices follow the emission direction', () => {
+  const sameDay = [{id: 'a', number: 'ADG-4º-2026-49', date: '2026-10-19'}, {id: 'b', number: 'ADG-4º-2026-50', date: '2026-10-19'}, {id: 'c', number: null, date: '2026-10-19'}];
+  const sorted = order => [...sameDay].sort((x,y) => compareInvoices(x,y,order)).map(i => i.number);
+  assert.deepEqual(sorted('new'), ['ADG-4º-2026-50', 'ADG-4º-2026-49', null]);
+  assert.deepEqual(sorted('old'), ['ADG-4º-2026-49', 'ADG-4º-2026-50', null]);
 });
 
 test('custom identifiers, years and padded numbers sort naturally', () => {
