@@ -10,6 +10,8 @@ npm start
 
 Abrir http://localhost:4173. Requiere Python 3.10 o posterior y Node.js LTS. La primera vez, ejecutar `sh scripts/setup-server.sh`, que crea el entorno `.venv` con el servidor HTTP [Waitress](https://docs.pylonsproject.org/projects/waitress/) (gratuito y de código abierto) y las dependencias de VERI*FACTU. Ejecutar `npm install` para instalar Playwright, utilizado para conservar los PDF. En este Mac utiliza Google Chrome; en otro equipo se puede indicar `CHROME_PATH` o instalar Chromium con `npx playwright install chromium`. Los PDF se preparan en el servidor y no envían datos a servicios externos.
 
+Para instalarla en un servidor (Ubuntu Server 24.04 LTS, Cloudflare Tunnel y traslado de datos) ver [deploy/GUIA-SERVIDOR.md](deploy/GUIA-SERVIDOR.md).
+
 ## Empresas, autónomos y usuarios
 
 La instalación admite varios emisores independientes. El selector **Empresa / autónomo** cambia el contexto de Facturas, Clientes, Análisis y Configuración. En móvil aparece encima del contenido. Cada factura pertenece al emisor seleccionado y conserva el usuario responsable, creador y emisor material. Los clientes, series de numeración, cobros, anticipos, justificantes, importaciones e historial son independientes por perfil. Dos emisores pueden tener el mismo número de factura; dentro de un emisor sigue siendo único.

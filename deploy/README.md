@@ -20,13 +20,15 @@ Las pruebas sintéticas en el Mac local incluyeron 5.000 facturas y 3.334 cobros
 
 ## Instalación automática en Ubuntu Server 24.04 LTS
 
-`install-ubuntu.sh` realiza los pasos de la sección siguiente en un servidor Ubuntu 24.04 recién creado: actualizaciones de seguridad automáticas, Python, Node.js 24 LTS (NodeSource), Caddy (repositorio oficial), usuario `adg-finance`, código desde GitHub con una clave de despliegue de solo lectura, dependencias, Chromium para los PDF, servicio systemd y cortafuegos (solo SSH, y HTTP/HTTPS si hay dominio). Se puede volver a ejecutar: actualiza el código y reinicia el servicio.
+El plan acordado para el servidor de la oficina (equipo, Cloudflare Tunnel, subdominio, costes, copias y pendientes) está en **[GUIA-SERVIDOR.md](GUIA-SERVIDOR.md)**.
+
+`install-ubuntu.sh` realiza los pasos de la sección siguiente en un servidor Ubuntu 24.04 recién creado: actualizaciones de seguridad automáticas, Python, Node.js 24 LTS (NodeSource), Caddy (repositorio oficial), usuario `adg-finance`, código desde GitHub con una clave de despliegue de solo lectura, dependencias, Chromium para los PDF, servicio systemd y cortafuegos. Tres modos: sin dominio (solo túnel SSH), `--domain … --cloudflare` (Cloudflare Tunnel: ningún puerto abierto) o `--domain …` con Caddy (abre HTTP/HTTPS). Se puede volver a ejecutar: actualiza el código y reinicia el servicio.
 
 1. Hacer commit y push a GitHub de la versión que se quiere instalar: el servidor instala la rama `main` publicada, no los cambios locales.
-2. Copiar el script al servidor y ejecutarlo como root: `scp deploy/install-ubuntu.sh usuario@servidor:` y `ssh usuario@servidor sudo bash install-ubuntu.sh`. La primera vez muestra una clave pública: añadirla en GitHub → repositorio → Settings → Deploy keys, **sin** permiso de escritura, y repetir el comando.
+2. Copiar el script al servidor y ejecutarlo como root: `scp deploy/install-ubuntu.sh usuario@servidor:` y `ssh -t usuario@servidor sudo bash install-ubuntu.sh` (añadiendo `--domain finance.empresa.es --cloudflare` para el túnel; pide el token sin mostrarlo). La primera vez muestra una clave pública: añadirla en GitHub → repositorio → Settings → Deploy keys, **sin** permiso de escritura, y repetir el comando.
 3. Trasladar los datos desde el Mac, con la aplicación local detenida: `bash deploy/migrate-data.sh usuario@servidor`. Copia SQLite de forma consistente, los justificantes, los documentos, las copias diarias y la clave del servidor (`vf-secrets/master.key`); conserva en el servidor los datos que hubiera y cierra todas las sesiones.
 4. Sin dominio, la aplicación no queda expuesta a Internet: acceder con `ssh -L 4173:127.0.0.1:4173 usuario@servidor` y abrir `http://localhost:4173`.
-5. Con dominio: apuntar su DNS al servidor y ejecutar `sudo bash /opt/adg-finance/deploy/install-ubuntu.sh --domain finance.empresa.es`. El dominio queda guardado en `/etc/default/adg-finance` para las siguientes actualizaciones; `--no-domain` lo retira.
+5. Con dominio y Caddy: apuntar su DNS al servidor, abrir los puertos 80/443 hacia él y ejecutar `sudo bash /opt/adg-finance/deploy/install-ubuntu.sh --domain finance.empresa.es`. Con Cloudflare Tunnel no hace falta ninguna de las dos cosas (ver la guía). El dominio y el modo quedan guardados en `/etc/default/adg-finance` para las siguientes actualizaciones; `--no-domain` lo retira.
 6. Actualizar después de publicar cambios en GitHub: `sudo bash /opt/adg-finance/deploy/install-ubuntu.sh`.
 
 Los pasos de copia externa y prueba de carga (punto 7 de la sección siguiente) siguen siendo manuales.
