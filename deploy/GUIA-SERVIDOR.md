@@ -141,7 +141,7 @@ sudo apt install -y smartmontools && sudo smartctl -H /dev/sda   # o /dev/nvme0;
 
 ### 4. Publicar la versión en GitHub
 
-El servidor instala la rama `main` publicada en GitHub, no los cambios del Mac. Ver «Pendiente» al final: ahora mismo el trabajo está en la rama `correo-anulaciones-despliegue` y falta unirlo a `main` y subirlo.
+El servidor instala la rama `main` publicada en GitHub, no los cambios del Mac: antes de instalar o actualizar, hacer commit y `git push` de lo que se quiera llevar al servidor.
 
 ### 5. Instalar
 
@@ -231,7 +231,7 @@ Detalle en el [README principal](../README.md):
 
 ## Pendiente
 
-- [ ] **Unir la rama `correo-anulaciones-despliegue` a `main` y subirla a GitHub** (commit `0fd8069`, incluye todo lo anterior y deja de versionar `node_modules`).
+- [x] Unir la rama `correo-anulaciones-despliegue` a `main` y subirla a GitHub (hecho el 22/10/2026: commits `0fd8069` y `30b5366`; `node_modules` ya no se versiona).
 - [ ] **Probar `install-ubuntu.sh` en un Ubuntu 24.04 real**: solo se ha comprobado la sintaxis y la lógica de opciones; el empaquetado de `migrate-data.sh` sí se probó con los datos reales (sin enviarlos).
 - [ ] **Comprobar a través de Cloudflare** que el límite de intentos de acceso se aplica a cada persona y no a toda la oficina: la aplicación toma la IP de la cabecera `X-Forwarded-For` de las conexiones locales, que Cloudflare debería enviar a través del túnel. Prueba: varios intentos fallidos desde el móvil no deben bloquear el acceso desde la oficina.
 - [ ] Configurar la **copia externa** diaria y ensayar una restauración.
