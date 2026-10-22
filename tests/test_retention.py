@@ -25,7 +25,7 @@ class RetentionTests(unittest.TestCase):
         return r.after_changes(self.c,[(emitter,previous,state)],self.save,{'id':'alice'})
     def test_global_lru_ignores_noop_timestamps_and_preserves_other_users_and_issued_invoices(self):
         original={'invoices':[self.draft(n) for n in range(8)]+[self.draft(30,'bob')]}
-        issued={**self.draft(40),'id':'issued','status':'issued','number':'ADG-4º-2026-01','verifactu':{'recordId':'sealed'}}
+        issued={**self.draft(40),'id':'issued','status':'issued','number':'ADG-4T-2026-01','verifactu':{'recordId':'sealed'}}
         other={'invoices':[self.draft(n) for n in range(8,15)]+[issued]}
         self.put('adg-original',original);self.put('other',other);r.seed_queue(self.c,r.states(self.c))
         edited=deepcopy(original);edited['invoices'][0]['notes']='Cambio real';self.change('adg-original',edited)

@@ -26,11 +26,11 @@ La primera cuenta administradora es la **cuenta principal** y gestiona los emiso
 - **Gestionar emisores** permite crear una empresa o autónomo con su NIF y datos fiscales. Archivar conserva el histórico y lo deja en consulta para la cuenta principal; reactivar recupera sus accesos anteriores. Un NIF identifica un único perfil, también entre los archivados.
 - En Clientes, un administrador con acceso a otro perfil puede copiar expresamente una ficha al otro emisor. Se copia únicamente el contacto, con un identificador nuevo. Los cambios posteriores son independientes y no se trasladan facturas ni cobros.
 
-Las transferencias compartidas entre usuarios mantienen las restricciones anteriores: cada usuario normal recibe únicamente la parte aplicada a sus facturas. Las transferencias pueden pagar varias facturas y clientes dentro del mismo emisor. No se permiten repartos de un cobro entre emisores distintos.
+Las transferencias compartidas entre usuarios mantienen las restricciones anteriores: cada usuario normal recibe únicamente la parte aplicada a sus facturas. Un cobro pertenece a un cliente y solo puede pagar facturas de ese cliente; puede pagar varias de sus facturas a la vez. No se permiten repartos de un cobro entre emisores distintos.
 
 **Usuarios → Crear usuario** permite asignar, para cada empresa o autónomo, Sin acceso, Usuario normal o Administrador. Las cuentas nuevas utilizan contraseña temporal y deben elegir una personal. Cambiar accesos, rol, correo, contraseña o estado revoca las sesiones afectadas. Desactivar conserva sus documentos. La cuenta principal no puede desactivarse ni perder su rol mediante la interfaz.
 
-**Mi cuenta** permite cambiar la contraseña y cerrar sesión. Las contraseñas admiten frases de 15 a 128 caracteres y se guardan con scrypt y sal individual. Las sesiones utilizan cookies HttpOnly/SameSite y el servidor conserva únicamente su hash; duran como máximo 12 horas y caducan tras dos horas sin solicitudes de la aplicación. Los accesos fallidos tienen límite de intentos. La cookie añade Secure en el dominio HTTPS configurado. Las facturas y credenciales no se guardan en localStorage. Cerrar sesión retira los datos de otras pestañas del navegador.
+**Mi cuenta** permite cambiar la contraseña y cerrar sesión. Las contraseñas tienen de 6 a 128 caracteres (se recomienda una frase larga) y se guardan con scrypt y sal individual; la comprobación se hace sin bloquear al resto de usuarios. Las sesiones utilizan cookies HttpOnly/SameSite y el servidor conserva únicamente su hash; la actividad se registra como máximo una vez por minuto; duran como máximo 12 horas y caducan tras dos horas sin solicitudes de la aplicación. Los accesos fallidos tienen límite de intentos. La cookie añade Secure en el dominio HTTPS configurado. Las facturas y credenciales no se guardan en localStorage. Los identificadores de facturas, clientes y cobros solo admiten letras, cifras y `. _ : -`, y la cabecera `Content-Security-Policy` impide ejecutar código que no proceda de los archivos de la aplicación. Cerrar sesión retira los datos de otras pestañas del navegador.
 
 Para recuperar la contraseña desde el equipo de los datos:
 
@@ -44,7 +44,7 @@ Pide una nueva contraseña temporal de forma interactiva, revoca sesiones y cons
 
 **Nueva factura → Descripción** es un texto opcional de hasta 2000 caracteres, situado antes de Conceptos. Se guarda con el borrador, conserva los saltos de línea y aparece antes de los conceptos en los cuatro diseños. Si está vacío no ocupa espacio en el documento. Se conserva al duplicar o trasladar el borrador entre emisores, también para usuarios normales.
 
-La presentación actual omite «Factura de honorarios» y muestra el número visible únicamente cuando la factura está marcada como VERI*FACTU; las facturas sin marcar lo ocultan, incluidas las referencias de pago. La numeración permanece en los listados, cobros, exportaciones, archivos y registros de pruebas AEAT. Los PDF conservados y la presentación de los documentos VERI*FACTU ya sellados se mantienen. Cada nueva emisión guarda la versión de presentación en `presentationSnapshot`. El formato sin número responde a una preferencia visual: el artículo 6 del RD 1619/2012 exige número y, en su caso, serie en una factura fiscal.
+La presentación omite «Factura de honorarios». Desde el 19/10/2026 (presentación versión 4) todas las facturas nuevas muestran su número y la referencia para la transferencia, estén o no marcadas como VERI*FACTU, como exige el artículo 6 del RD 1619/2012. En la vista previa de un borrador aparece «Borrador» donde irá el número. Las facturas emitidas antes sin VERI*FACTU conservan su presentación sin número, y los PDF conservados no cambian. Cada nueva emisión guarda la versión de presentación en `presentationSnapshot`.
 
 ## Borradores y textos recientes
 
@@ -64,17 +64,35 @@ Los ejemplos permanecen en Facturas con identificación visible y pueden descarg
 
 Cada emisor tiene una serie por defecto con sus iniciales: arquitecturadeguardia usa `ADG` y, por ejemplo, «Pepe Sánchez» usa `PS`. Las iniciales se toman de cada palabra del nombre fiscal, sin «de», «la», «y», «S.L.» ni otras partículas. **Configuración → Serie por defecto** permite fijar otras (de 1 a 10 letras o cifras); vacía, se vuelven a calcular del nombre, de modo que cambiar el nombre también cambia la serie.
 
-Las nuevas emisiones usan `INICIALES-trimestreº-año-número`, por ejemplo `ADG-4º-2026-01` o `PS-4º-2026-01`. El trimestre procede de la fecha de expedición. El contador es anual por emisor: continúa entre trimestres y vuelve a 01 al cambiar de año. Se muestran al menos dos cifras (01…99, 100…). Las rectificativas tienen serie separada `INICIALES-R-trimestreº-año-número`.
+Las nuevas emisiones usan `INICIALES-trimestreT-año-número`, por ejemplo `ADG-4T-2026-01` o `PS-4T-2026-01`. El trimestre procede de la fecha de expedición. El contador es anual por emisor: continúa entre trimestres y vuelve a 01 al cambiar de año. Se muestran al menos dos cifras (01…99, 100…). Las rectificativas tienen serie separada `INICIALES-R-trimestreT-año-número`.
 
-En **Nueva factura → Serie** se puede escribir otra serie completa cuando la casilla VERI*FACTU no está marcada (hasta 40 letras, cifras, º y los signos `- / . _`, sin espacios; `EJEMPLO` está reservada). Cada serie lleva su propio contador: `OBRA` produce `OBRA-01`, `OBRA-02`…; una serie con trimestre, como `PS-1º-2026`, comparte el contador anual de `PS`. El borrador guarda la serie aunque esté incompleta; se comprueba al revisar y al emitir. Al marcar VERI*FACTU, la serie vuelve a la predeterminada y queda bloqueada. Duplicar conserva la serie escrita; las rectificativas y los traslados a otro emisor vuelven a la serie por defecto.
+En **Nueva factura → Serie** se puede escribir otra serie completa cuando la casilla VERI*FACTU no está marcada (hasta 40 letras, cifras, º y los signos `- / . _`, sin espacios; `EJEMPLO` está reservada). Cada serie lleva su propio contador: `OBRA` produce `OBRA-01`, `OBRA-02`…; una serie con trimestre, como `PS-1T-2026`, comparte el contador anual de `PS`. El borrador guarda la serie aunque esté incompleta; se comprueba al revisar y al emitir. Al marcar VERI*FACTU, la serie vuelve a la predeterminada y queda bloqueada. Duplicar conserva la serie escrita; las rectificativas y los traslados a otro emisor vuelven a la serie por defecto.
 
-Las emisiones previas conservan sus números y documentos. Al calcular el siguiente se tienen en cuenta los números de la serie en todos los trimestres y, para ADG, series anteriores F/R, históricos numéricos, antiguas series VF-F/VF-R y los números guardados en el historial de renumeración. Las nuevas facturas ordinarias y de pruebas comparten la reserva de números dentro del emisor para no repetir identificadores; las de pruebas siguen excluidas de las cifras y cobros habituales. Los documentos VERI*FACTU previamente sellados conservan su presentación; las nuevas emisiones guardan `presentationSnapshot` versión 3 con la visibilidad del número.
+Las emisiones previas conservan sus números y documentos. Las series antiguas con `º` o `°` siguen contando en el mismo contador anual; el cambio a `T` no reinicia ni reutiliza sus números. Antes de generar un nuevo registro VERI*FACTU se comprueba que el número cumple la longitud y los caracteres admitidos por la AEAT. Al calcular el siguiente se tienen en cuenta los números de la serie en todos los trimestres y, para ADG, series anteriores F/R, históricos numéricos, antiguas series VF-F/VF-R y los números guardados en el historial de renumeración. Las nuevas facturas ordinarias y de pruebas comparten la reserva de números dentro del emisor para no repetir identificadores; las de pruebas siguen excluidas de las cifras y cobros habituales. Los documentos VERI*FACTU previamente sellados conservan su presentación; las nuevas emisiones guardan `presentationSnapshot` versión 3 con la visibilidad del número.
 
 ## Cambiar el número de una factura
 
 Facturas → menú de tres puntos → **Editar número de factura**. También está disponible dentro de la factura y en el botón del lápiz de Análisis. Permite cambiar el identificador completo después de emitir, incluidas letras, año y cifras; se refleja en los listados, exportaciones y nombres de los nuevos archivos PDF. Los PDF ya descargados no se modifican.
 
 Los cobros, saldos y rectificativas conservan sus vínculos. Los cambios de número quedan registrados con fecha, número anterior y nuevo, visibles en el diálogo y en Análisis → Historial. Se bloquean números usados por otras facturas, incluidos equivalentes históricos como `02-2026` y `F-2026-002`. La numeración automática no reutiliza números anteriores y una nueva importación reconoce las facturas renumeradas. Duplicar una factura crea un borrador sin heredar su historial de números.
+
+## Eliminar y anular facturas
+
+Desde el menú de tres puntos del listado, el editor o la revisión de la factura, siempre con una confirmación:
+
+- **Borradores y facturas de ejemplo:** **Eliminar** los borra definitivamente. Puede hacerlo su responsable o un administrador. Un borrador eliminado no reaparece aunque otra pestaña antigua lo tuviera abierto.
+- **Facturas emitidas:** **Anular factura** (solo administradores). No se borran: se conservan con su número y su PDF, marcadas como **Anulada**, en la pestaña **Anuladas** del listado. Dejan de contar en pendientes, cobros y Análisis, no se pueden renumerar, rectificar ni enviar por correo. No se puede deshacer.
+- **El número de una factura anulada queda libre.** Si era la última de su serie, la siguiente factura emitida vuelve a tomar ese número. Si era intermedia, la numeración continúa y el número libre se puede asignar a otra factura con **Editar número de factura**. La anulada se conserva en **Anuladas** con su número y PDF originales; solo la vigente cuenta para la numeración, los duplicados y la importación del Excel. La numeración debe ser correlativa y única: consulta con tu gestoría antes de reutilizar el número de una factura que ya llegó al cliente.
+- Antes de anular hay que anular sus cobros o ajustes aplicados, y antes de eliminar o anular una factura rectificada hay que eliminar o anular su rectificativa. Al anular una rectificativa, la factura original vuelve a ser la versión vigente.
+- Las facturas **VERI*FACTU** no se pueden eliminar ni anular: sus registros fiscales son inmutables y se corrigen desde VERI*FACTU · pruebas.
+
+## Enviar facturas por correo
+
+Una vez emitida la factura, **Enviar por correo** (debajo de **Descargar PDF**) abre un diálogo con el correo del cliente como destinatario por defecto. Se pueden añadir más correos separados por comas (máximo 10) y modificar el asunto y el mensaje. Se adjunta el mismo PDF conservado que se descarga. Las facturas de ejemplo no se envían.
+
+Cada emisor envía desde su propia cuenta: un administrador la configura en **Configuración → Correo de envío** (servidor SMTP, seguridad SSL/TLS o STARTTLS, puerto, usuario, contraseña y remitente) y puede comprobarla con **Probar conexión**. En Gmail se necesita una contraseña de aplicación. La contraseña se guarda cifrada con la misma clave del servidor que los certificados de VERI*FACTU (`data/vf-secrets/`). La opción «Sin cifrado» solo se admite con un servidor de correo en el mismo equipo. El correo sale a través del servidor configurado; es el único caso en que la aplicación envía datos a un servicio externo, y solo cuando se pulsa **Enviar**.
+
+Los envíos realizados quedan registrados con la fecha, los destinatarios y quién los envió. Ese registro se muestra en la revisión de la factura y en el historial de seguridad. Se guarda en SQLite (tabla `mail_log`) y se incluye en las copias diarias de `data/backups/`, pero no en el ZIP de cada emisor. Los intentos fallidos se notifican en pantalla y no se registran.
 
 ## Análisis
 
@@ -85,7 +103,7 @@ Los cobros, saldos y rectificativas conservan sus vínculos. Los cambios de núm
 - Nombre opcional para cada pago; los anteriores se identifican por referencia o pagador.
 - Pago parcial desde «Cobrar»: seleccionar «Pago parcial» e introducir el importe recibido; el resto queda pendiente.
 - Pendientes agrupables por cliente y selección de varias facturas para cobrar conjuntamente.
-- Una transferencia puede pagar facturas de varios clientes; una factura puede recibir varios pagos.
+- Al registrar un cobro se elige el cliente que paga y solo se ofrecen sus facturas pendientes; el pagador es siempre ese cliente. Una transferencia puede pagar varias facturas del mismo cliente y una factura puede recibir varios pagos. Los anticipos quedan ligados a su cliente y solo se aplican a sus facturas.
 - Anticipos y sobrantes quedan disponibles para aplicar después o devolver.
 - Diferencias de hasta 0,02 € generan un ajuste identificado; las mayores requieren clasificación explícita.
 - Ajustes de confirming, compensaciones, devoluciones y anulaciones con motivo.
@@ -97,7 +115,7 @@ Los cobros, saldos y rectificativas conservan sus vínculos. Los cambios de núm
 
 Análisis → Importar Excel → Revisar «AA ingresos ADG 2026.xlsx», o seleccionar otro archivo.
 
-El Excel se lee como datos: no se ejecutan fórmulas, macros ni instrucciones incluidas en documentos. La vista previa permite elegir hoja y filas, corregir datos y marcar incidencias revisadas. Cada cobro propuesto se selecciona y confirma por separado. La importación se realiza únicamente al confirmar en pantalla.
+El Excel se lee como datos: no se ejecutan fórmulas, macros ni instrucciones incluidas en documentos. La vista previa permite elegir hoja y filas, corregir datos y marcar incidencias revisadas. Cada cobro propuesto se selecciona y confirma por separado. Si el Excel atribuye a una misma transferencia facturas de varios clientes, el cobro se asigna al cliente con mayor importe y las facturas de los demás se dejan fuera con un aviso: siguen pendientes y la diferencia queda como saldo a favor de quien pagó. La importación se realiza únicamente al confirmar en pantalla.
 
 Se conservan números, totales históricos, procedencia de las filas y anotaciones originales. Se contrastan números equivalentes como `02-2026` y `F-2026-002` para evitar duplicados. Las transferencias ya incorporadas se reconocen sin depender del nombre o del hash del archivo. Si una factura existente tiene datos distintos se bloquea la importación para revisarla. La numeración nueva continúa después de los números históricos.
 
@@ -164,6 +182,8 @@ Las pruebas específicas están en `tests/test_emitters.py`, `tests/test_documen
 En **Nueva factura** puedes marcar **VERI*FACTU · Pruebas AEAT**. Está desmarcada inicialmente; el borrador sigue siendo editable. Al emitir se fija su contenido y su número de prueba, incluso si el envío falla o es rechazado. Las correcciones generan registros nuevos. Los documentos `VF-F`/`VF-R` y sus cobros se mantienen fuera de los listados e informes habituales.
 
 Instala el adaptador con `sh scripts/setup-verifactu.sh` y arranca con `npm start`. En **VERI*FACTU · pruebas**, la cuenta principal configura la identidad del productor; los administradores añaden el certificado propio de cada empresa o autónomo. El envío automático permanece desactivado hasta activarlo para ese emisor. El destino está limitado al entorno oficial de pruebas y no existe opción de producción.
+
+La importación requiere un PKCS#12 `.pfx` o `.p12` con su clave privada. Distingue las copias que se abren pero carecen de clave privada, las exportaciones públicas CER/CRT o P7B renombradas y los cifrados no compatibles. Un fallo de descifrado no demuestra por sí solo que la contraseña sea incorrecta: también puede deberse a un archivo dañado o una exportación incompatible. Una importación fallida conserva el certificado y la configuración anteriores. Las pruebas cubren AES-256, TripleDES y contraseñas con caracteres no ASCII y espacios, sin recortarlas.
 
 Se conservan XML, huellas, intentos, respuestas y PDF. Los certificados se cifran y la contraseña de importación no se guarda. Para una recuperación completa conserva el directorio de datos y su clave privada del servidor mediante una copia cifrada con acceso restringido. Los ZIP por emisor incluyen un archivo fiscal de consulta, sin credenciales; no sustituyen la recuperación de la instalación completa.
 

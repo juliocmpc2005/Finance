@@ -12,7 +12,7 @@ try{
  const qa=await authenticateTest(base);browser=await chromium.launch({headless:true,executablePath:process.env.CHROME_PATH||'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'});const p=await browser.newPage({viewport:{width:1440,height:1100}});await qa.page(p);p.setDefaultTimeout(18000);const errors=[];p.on('pageerror',error=>errors.push(error.message));
  await p.goto(base);await p.getByRole('heading',{name:'Tus facturas',exact:true}).waitFor();
  const state=()=>p.evaluate(()=>fetch('/api/state').then(r=>r.json()));
- const quarter=`${Math.ceil(Number((await p.evaluate(()=>new Intl.DateTimeFormat('en-CA',{timeZone:'Europe/Madrid'}).format(new Date()))).slice(5,7))/3)}º-${new Date().getFullYear()}`;
+ const quarter=`${Math.ceil(Number((await p.evaluate(()=>new Intl.DateTimeFormat('en-CA',{timeZone:'Europe/Madrid'}).format(new Date()))).slice(5,7))/3)}T-${new Date().getFullYear()}`;
  const series=p.locator('#series');
  async function draft(concept){await p.locator('[data-nav=invoices]').click();await p.getByRole('button',{name:'Nueva factura',exact:true}).click();await p.locator('#client').selectOption({index:1});await p.getByLabel('Concepto 1',{exact:true}).fill(concept);await p.getByLabel('Precio 1',{exact:true}).fill('100');}
  async function issue(){await p.getByRole('button',{name:'Revisar factura',exact:true}).click();await p.getByRole('button',{name:'Emitir factura',exact:true}).click();await p.getByRole('link',{name:'Descargar PDF',exact:true}).waitFor();return (await state()).state.invoices.find(i=>i.status==='issued'&&i.lines[0].description===lastConcept);}

@@ -29,12 +29,13 @@ test('los documentos VERI*FACTU ya sellados conservan su presentación anterior;
  }
 });
 
-test('solo VERI*FACTU muestra el número, en los cuatro diseños y en la referencia de una rectificativa',()=>{
+test('las facturas nuevas muestran el número; las emitidas antes sin VERI*FACTU conservan su presentación, en los cuatro diseños y en la referencia de una rectificativa',()=>{
  for(const template of availableTemplates(true)){
-  const context={client:()=>client,company:()=>company,originalNumber:'ADG-1º-2026-01'};
-  const i={...invoice,number:'ADG-2º-2026-02',templateId:template.id};
-  for(const flags of [{},{vfEnabled:false},{presentationSnapshot:{version:3,showNumber:true}}])assert.ok(!renderPaper({...i,...flags},context).includes(i.number));
-  for(const flags of [{vfEnabled:true},{vfTest:true},{verifactu:{recordId:'new'},presentationSnapshot:{version:3,showNumber:true}}]){
+  const context={client:()=>client,company:()=>company,originalNumber:'ADG-1T-2026-01'};
+  const i={...invoice,number:'ADG-2T-2026-02',templateId:template.id};
+  for(const flags of [{},{vfEnabled:false},{presentationSnapshot:{version:3,showNumber:false}},{presentationSnapshot:{version:3,showNumber:true}}])assert.ok(!renderPaper({...i,...flags},context).includes(i.number));
+  assert.ok(renderPaper({...i,status:'draft',number:null},context).includes('<h2>Borrador</h2>'));
+  for(const flags of [{presentationSnapshot:{version:4,showNumber:true,showHonorariaTitle:false}},{vfEnabled:true},{vfTest:true},{verifactu:{recordId:'new'},presentationSnapshot:{version:3,showNumber:true}}]){
    const html=renderPaper({...i,...flags},context);assert.ok(html.includes(`<h2>${i.number}</h2>`));
    const corrected=renderPaper({...i,...flags,originalId:'original',reason:'Corrección'},context);assert.ok(corrected.includes(context.originalNumber));
   }

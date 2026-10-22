@@ -1,4 +1,4 @@
-import {money,numeric,totals,amountInWords,lineCents} from './model.js?v=analysis-1';
+import {money,numeric,totals,amountInWords,lineCents,hasPrice} from './model.js?v=analysis-1';
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 export const templateCatalog=[
  {id:'classic',name:'Clásico',description:'Una composición tradicional, clara y equilibrada.'},
@@ -21,7 +21,15 @@ function invoiceNotice(i){
 }
 // Preserve the rendering of already sealed experimental documents.
 const legacyPresentation=i=>!!i.verifactu&&!i.presentationSnapshot;
-const showInvoiceNumber=i=>!!(i.vfEnabled||i.vfTest||i.verifactu)&&(i.presentationSnapshot?.showNumber??true);
+const isVerifactu=i=>!!(i.vfEnabled||i.vfTest||i.verifactu);
+// Since presentation version 4 every invoice shows its number; issued documents keep the presentation they were issued with.
+const showInvoiceNumber=i=>{const snapshot=i.presentationSnapshot;if(snapshot)return snapshot.version>=4&&snapshot.showNumber===true||isVerifactu(i)&&snapshot.showNumber!==false;return i.status!=='issued'||isVerifactu(i);};
+// Documents issued before presentation version 5, or with quantities, keep the quantity and unit price columns.
+function conceptTable(i,className,[concept,quantity]){
+ if(i.status==='issued'&&(i.presentationSnapshot?.version??0)<5||i.lines.some(l=>numeric(l.qty??1)!==1))return `<table class="${className}"><thead><tr><th>${concept}</th><th class="num">${quantity}</th><th class="num">Precio</th><th class="num">IVA</th><th class="num">Importe</th></tr></thead><tbody>${i.lines.map(l=>`<tr><td>${esc(l.description)}</td><td class="num">${esc(l.qty)}</td><td class="num">${money(numeric(l.price))}</td><td class="num">${esc(l.tax)} %</td><td class="num">${money(lineCents(l)/100)}</td></tr>`).join('')}</tbody></table>`;
+ const priced=i.lines.filter(hasPrice),showTax=new Set(priced.map(l=>numeric(l.tax))).size>1;
+ return `<table class="${className} concept-lines"><thead><tr><th>${concept}</th>${showTax?'<th class="num concept-tax">IVA</th>':''}${priced.length?'<th class="num">Importe</th>':''}</tr></thead><tbody>${i.lines.map(l=>`<tr><td>${esc(l.description)}</td>${showTax?`<td class="num">${hasPrice(l)?`${esc(l.tax)} %`:''}</td>`:''}${priced.length?`<td class="num">${hasPrice(l)?money(lineCents(l)/100):''}</td>`:''}</tr>`).join('')}</tbody></table>`;
+}
 function documentDescription(i){
  const text=typeof i.description==='string'?i.description.trim():'';
  return text?`<section class="invoice-description"><span class="adg-eyebrow">DESCRIPCIÓN</span><p>${esc(text)}</p></section>`:'';
@@ -36,7 +44,7 @@ function originalPaper(i,{client,company,originalNumber}){
  <div class="adg-document-heading"><div>${i.isExample||i.originalId||legacyPresentation(i)?`<span class="adg-eyebrow">${i.isExample?'FACTURA DE EJEMPLO':i.originalId?'FACTURA RECTIFICATIVA':'FACTURA DE HONORARIOS'}</span>`:''}${showInvoiceNumber(i)?`<h2>${esc(i.number||'Borrador')}</h2>`:''}</div><div class="adg-date"><span class="adg-eyebrow">FECHA DE EXPEDICIÓN</span><p>${date}</p></div></div>
  <section class="adg-recipient"><span class="adg-eyebrow">CLIENTE</span><strong>${esc(c.name)}</strong><p>NIF ${esc(c.nif)}<br>${address(c.address)}</p></section>
  ${i.originalId?`<p class="adg-original">${showInvoiceNumber(i)?`Rectifica la factura ${esc(originalNumber||'')}`:'Rectificación'} · ${esc(i.reason||'')}</p>`:''}
- ${documentDescription(i)}<section class="adg-services"><span class="adg-eyebrow">CONCEPTO · SERVICIOS PROFESIONALES</span>${i.lines.length===1&&numeric(i.lines[0].qty)===1?`<p class="adg-description">${esc(i.lines[0].description)}</p>`:`<table class="paper-table"><thead><tr><th>Descripción</th><th class="num">Cant.</th><th class="num">Precio</th><th class="num">IVA</th><th class="num">Importe</th></tr></thead><tbody>${i.lines.map(l=>`<tr><td>${esc(l.description)}</td><td class="num">${esc(l.qty)}</td><td class="num">${money(numeric(l.price))}</td><td class="num">${esc(l.tax)} %</td><td class="num">${money(lineCents(l)/100)}</td></tr>`).join('')}</tbody></table>`}</section>
+ ${documentDescription(i)}<section class="adg-services"><span class="adg-eyebrow">CONCEPTO · SERVICIOS PROFESIONALES</span>${i.lines.length===1&&numeric(i.lines[0].qty)===1?`<p class="adg-description">${esc(i.lines[0].description)}</p>`:`${conceptTable(i,'paper-table',['Descripción','Cant.'])}`}</section>
  <section class="adg-amounts"><div class="adg-amount-caption">Resumen de honorarios<span>Importes expresados en euros</span></div><div class="paper-total"><div class="sumrow"><span>Importe · base imponible</span><strong>${money(t.base)}</strong></div>${t.groups.map(g=>`<div class="sumrow"><span>IVA ${g.rate} %</span><strong>${money(g.amount)}</strong></div>`).join('')}${t.withholding?`<div class="sumrow"><span>Retención IRPF ${esc(i.withholdingRate||0)} %</span><strong>−${money(t.withholding)}</strong></div>`:''}<div class="grand"><span>TOTAL</span><strong>${money(t.total)}</strong></div></div></section>
  ${co.showAmountInWords!==false&&words?`<section class="adg-words"><p>Asciende el importe de la presente factura a la cantidad de</p><strong>${words}</strong></section>`:''}
  ${i.notes?`<div class="paper-notes">${esc(i.notes)}</div>`:''}
@@ -52,7 +60,7 @@ function genericPaper(i,{client,company,originalNumber},id){
  <header class="generic-letterhead"><div>${image(co.logoDataUrl)?`<img class="generic-logo" src="${image(co.logoDataUrl)}" alt="Logo de ${esc(co.name)}">`:''}<strong class="generic-sender">${esc(co.name)}</strong><p>NIF ${esc(co.nif)}<br>${address(co.address)}${co.email?`<br>${esc(co.email)}`:''}${co.phone?`<br>${esc(co.phone)}`:''}</p></div><div class="generic-document-title"><span>${i.isExample?'FACTURA DE EJEMPLO':i.originalId?'FACTURA RECTIFICATIVA':'FACTURA'}</span>${showInvoiceNumber(i)?`<h2>${esc(i.number||'Borrador')}</h2>`:''}<p>${date}</p></div></header>
  <section class="generic-recipient"><span class="generic-label">FACTURAR A</span><strong>${esc(c.name)}</strong><p>NIF ${esc(c.nif)}<br>${address(c.address)}</p></section>
  ${i.originalId?`<p class="generic-correction">${showInvoiceNumber(i)?`Rectifica ${esc(originalNumber)}`:'Rectificación'} · ${esc(i.reason||'')}</p>`:''}
- ${documentDescription(i)}<table class="paper-table generic-lines"><thead><tr><th>Concepto</th><th class="num">Cantidad</th><th class="num">Precio</th><th class="num">IVA</th><th class="num">Importe</th></tr></thead><tbody>${i.lines.map(l=>`<tr><td>${esc(l.description)}</td><td class="num">${esc(l.qty)}</td><td class="num">${money(numeric(l.price))}</td><td class="num">${esc(l.tax)} %</td><td class="num">${money(lineCents(l)/100)}</td></tr>`).join('')}</tbody></table>
+ ${documentDescription(i)}${conceptTable(i,'paper-table generic-lines',['Concepto','Cantidad'])}
  <section class="generic-totals"><div class="paper-total"><div class="sumrow"><span>Base imponible</span><strong>${money(t.base)}</strong></div>${t.groups.map(g=>`<div class="sumrow"><span>IVA ${esc(g.rate)} %</span><strong>${money(g.amount)}</strong></div>`).join('')}${t.withholding?`<div class="sumrow"><span>Retención IRPF ${esc(i.withholdingRate||0)} %</span><strong>−${money(t.withholding)}</strong></div>`:''}<div class="grand"><span>TOTAL A COBRAR</span><strong>${money(t.total)}</strong></div></div></section>
  ${co.showAmountInWords?`<p class="generic-words">${esc(amountInWords(t.total))}</p>`:''}
  ${i.notes?`<div class="paper-notes">${esc(i.notes)}</div>`:''}

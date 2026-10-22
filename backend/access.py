@@ -5,7 +5,7 @@ from .finance import now, today,check_state_shape,initialize,DomainError
 
 LEDGER=['payments','allocations','adjustments','refunds','paymentAdjustments','importBatches']
 OWNERSHIP=['ownerId','createdByUserId','issuedByUserId']
-DRAFT_FIELDS=['clientId','date','description','lines','notes','reason','originalId','templateId','withholdingRate','isExample','vfEnabled','vfExemption','series']
+DRAFT_FIELDS=['clientId','date','description','lines','notes','reason','originalId','templateId','withholdingRate','isExample','vfEnabled','vfExemption','series','globalPrice','globalTax']
 
 
 def adopt_existing(state,user_id):
@@ -27,9 +27,13 @@ def can_manage_payment(state,user,payment):
     return payment.get('ownerId')==user['id'] and not any(a.get('invoiceId') and a['invoiceId'] not in ids for key in ['allocations','refunds'] for a in state[key] if a.get('paymentId')==payment['id'])
 
 
-def project_state(state,user):
+def sees_everything(user):return user['role']=='admin'
+
+
+def project_state(state,user,copy=True):
+    """copy=False when the caller owns a freshly decoded state and only serialises it."""
     if state is None:return None
-    if user['role']=='admin':return deepcopy(state)
+    if sees_everything(user):return deepcopy(state) if copy else state
     ids=own_ids(state,user)
     result={k:deepcopy(state[k]) for k in ['version','financeVersion','adgProfileVersion','demoMarked','company','clients','emitterId','templatesVersion'] if k in state}
     result['invoices']=[deepcopy(i) for i in state['invoices'] if i['id'] in ids]
@@ -75,7 +79,8 @@ def require_payment(state,user,payment_id):
 def authorize_command(state,user,cmd):
     kind=cmd.get('type')
     if kind in ['restore','import']:return require_admin(user)
-    if kind in ['issue_invoice','rename_invoice','adjustment']:require_own_invoice(state,user,cmd.get('invoiceId'))
+    if kind in ['issue_invoice','rename_invoice','adjustment','delete_invoice','void_invoice']:require_own_invoice(state,user,cmd.get('invoiceId'))
+    if kind=='void_invoice':require_admin(user)
     if kind in ['payment','allocate']:
         for allocation in cmd.get('allocations',[]):require_own_invoice(state,user,allocation.get('invoiceId'))
     if kind in ['allocate','refund']:require_payment(state,user,cmd.get('paymentId'))

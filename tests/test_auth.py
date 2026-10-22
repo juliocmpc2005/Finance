@@ -117,16 +117,29 @@ class AuthApiTests(unittest.TestCase):
         client,_=self.member();text='Proyecto <Trevenez> & reforma\nSegunda fase'
         invoice=self.issue(client,description=text)
         self.assertEqual(invoice['description'],text)
-        self.assertEqual(invoice['presentationSnapshot'],{'version':3,'showNumber':False,'showHonorariaTitle':False})
+        self.assertEqual(invoice['presentationSnapshot'],{'version':5,'showNumber':True,'showHonorariaTitle':False})
         self.assertEqual(client.state()['state']['invoices'][0]['description'],text)
         with closing(sqlite3.connect(self.data/'finance.sqlite')) as c:
             html=c.execute('SELECT html FROM documents WHERE id=?',(invoice['documentId'],)).fetchone()[0]
         self.assertIn('Proyecto &lt;Trevenez&gt; &amp; reforma\nSegunda fase',html)
-        self.assertNotIn(invoice['number'],html.split('<body>',1)[1])
+        self.assertIn(f"<h2>{invoice['number']}</h2>",html.split('<body>',1)[1])
         self.assertNotIn('FACTURA DE HONORARIOS',html)
         snapshot=client.state();snapshot['state']['invoices'][0]['description']='Alterada'
         self.assertEqual(client.request('/api/state',snapshot)[0],403)
 
+    def test_member_cannot_store_markup_in_record_identifiers(self):
+        # Identifiers end up in HTML attributes of the administrator's screens.
+        member,_=self.member('Identificadores')
+        for payload in ['"><img src=x onerror=alert(1)>',"x' onmouseover='alert(1)",'a b','<script>']:
+            snapshot=member.state()
+            snapshot['state']['invoices'].append({'id':payload,'status':'draft','number':None,'clientId':'a','date':'2026-03-01','lines':[]})
+            with self.subTest(record='invoice',payload=payload):self.assertEqual(member.request('/api/state',snapshot)[0],400)
+            snapshot=member.state();snapshot['state']['clients'].append({'id':payload,'name':'Cliente','nif':'','address':''})
+            with self.subTest(record='client',payload=payload):self.assertEqual(member.request('/api/state',snapshot)[0],400)
+        snapshot=member.state();snapshot['state']['invoices'].append({'id':str(uuid.uuid4()),'status':'draft','number':None,'clientId':'"><b>','date':'2026-03-01','lines':[]})
+        self.assertEqual(member.request('/api/state',snapshot)[0],400)
+        snapshot=member.state();snapshot['state']['invoices'].append({'id':str(uuid.uuid4()),'status':'draft','number':None,'clientId':'a','date':'2026-03-01','lines':[]})
+        self.assertEqual(member.request('/api/state',snapshot)[0],200)
     def test_members_cannot_escalate_permissions_or_overwrite_hidden_data(self):
         client,user=self.member();own=self.issue(client);snapshot=client.state()
         bad=deepcopy(snapshot);bad['state']['company']['name']='Empresa falsa';self.assertEqual(client.request('/api/state',bad)[0],403)
@@ -155,7 +168,7 @@ class AuthApiTests(unittest.TestCase):
         command={'type':'payment','amountCents':4000,'date':'2026-02-01','payer':'Cliente','account':'Banco','allocations':[{'invoiceId':invoice['id'],'amountCents':4000}]}
         status,result,_=client.command(command);self.assertEqual(status,200,result);pid=result['state']['payments'][0]['id'];self.assertNotIn('restricted',result['state']['payments'][0])
         self.assertEqual(client.command({'type':'void','collection':'payments','id':pid,'reason':'Corregir prueba'})[0],200)
-        status,result,_=client.command({**command,'amountCents':12000,'date':today(),'allocations':[]});self.assertEqual(status,200,result)
+        status,result,_=client.command({**command,'amountCents':12000,'date':today(),'allocations':[],'clientId':invoice['clientId']});self.assertEqual(status,200,result)
         pid=result['state']['payments'][-1]['id'];self.assertEqual(client.command({'type':'allocate','paymentId':pid,'date':today(),'allocations':[{'invoiceId':invoice['id'],'amountCents':10000}]})[0],200)
         foreign=self.admin.state()['state']['invoices'][0]
         self.assertEqual(client.command({**command,'allocations':[{'invoiceId':foreign['id'],'amountCents':4000}]})[0],403)

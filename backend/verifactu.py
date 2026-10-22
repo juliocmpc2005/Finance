@@ -13,9 +13,10 @@ from .finance import DomainError, now, uid
 
 try:
     from cryptography import x509
+    from cryptography.exceptions import UnsupportedAlgorithm
     from cryptography.fernet import Fernet, InvalidToken
     from cryptography.hazmat.primitives import serialization
-    from cryptography.hazmat.primitives.serialization import pkcs12
+    from cryptography.hazmat.primitives.serialization import pkcs12, pkcs7
 except ImportError:
     Fernet = None
     InvalidToken = ValueError
@@ -60,7 +61,12 @@ def public_config(c,user):
             'certificate':info,'identity':identity,'ready':ready,'dependencies':xml.E is not None and Fernet is not None}
 
 def secret_key(data_dir):
-    dependencies();folder=Path(data_dir)/'vf-secrets';folder.mkdir(mode=0o700,exist_ok=True);os.chmod(folder,0o700)
+    dependencies();return vault(data_dir)
+
+def vault(data_dir):
+    """Server key that protects stored secrets (certificates and mail passwords)."""
+    if Fernet is None: raise DomainError('Instala las dependencias del servidor con scripts/setup-server.sh.')
+    folder=Path(data_dir)/'vf-secrets';folder.mkdir(mode=0o700,exist_ok=True);os.chmod(folder,0o700)
     path=folder/'master.key'
     try:
         fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
@@ -70,12 +76,37 @@ def secret_key(data_dir):
     os.chmod(path,0o600)
     return Fernet(path.read_bytes())
 
+def certificate_file_format(content):
+    """Identify public-only exports without using their extension or exposing data."""
+    for label,load in [('CER/CRT',x509.load_der_x509_certificate),
+                       ('CER/CRT (PEM)',x509.load_pem_x509_certificate),
+                       ('P7B/PKCS#7',pkcs7.load_der_pkcs7_certificates),
+                       ('P7B/PKCS#7 (PEM)',pkcs7.load_pem_pkcs7_certificates)]:
+        try:
+            load(content)
+            return label
+        except (ValueError,TypeError,UnsupportedAlgorithm):
+            pass
+    return None
+
 def certificate_info(content,password,issuer_nif):
     dependencies()
+    if not content: raise DomainError('El archivo del certificado está vacío. Selecciona una copia .pfx o .p12 que incluya la clave privada.')
     try:
         key,cert,chain=pkcs12.load_key_and_certificates(content,password.encode() if password else None)
-        if not key or not cert: raise ValueError()
-    except (ValueError,TypeError): raise DomainError('No se ha podido abrir el certificado PKCS#12. Revisa el archivo y su contraseña.')
+    except UnsupportedAlgorithm:
+        raise DomainError('El cifrado del archivo PKCS#12 no es compatible con esta instalación. Vuelve a exportar una copia .pfx o .p12 con un cifrado compatible, incluyendo su clave privada.') from None
+    except (ValueError,TypeError):
+        file_format=certificate_file_format(content)
+        if file_format:
+            raise DomainError(f'El contenido del archivo es {file_format}, aunque su nombre termine en .pfx o .p12. Ese formato no sirve para importar aquí el certificado con su clave privada. Selecciona una copia PKCS#12 exportada con su clave privada; cambiar la extensión no convierte el archivo.') from None
+        raise DomainError('No se ha podido descifrar o leer el archivo PKCS#12. Este error no permite distinguir entre una contraseña distinta, un archivo dañado o una exportación incompatible. Usa la contraseña de la copia exportada; si Windows puede importarla, vuelve a exportarla como .pfx incluyendo la clave privada.') from None
+    # A valid, correctly decrypted PKCS#12 can contain public certificates only.
+    # This must not be reported as a password failure.
+    if key is None:
+        raise DomainError('El archivo PKCS#12 se ha abierto correctamente, pero no contiene la clave privada. Necesitas una copia .pfx o .p12 exportada con «Sí, exportar la clave privada».')
+    if cert is None:
+        raise DomainError('El archivo PKCS#12 contiene una clave privada, pero no su certificado asociado. Exporta una copia .pfx o .p12 que incluya ambos.')
     current=datetime.now(timezone.utc)
     if cert.not_valid_before_utc>current or cert.not_valid_after_utc<=current: raise DomainError('El certificado aún no es válido o está caducado.')
     candidates=[]
@@ -278,11 +309,14 @@ def start_worker(connect,lock,data_dir):
             stop.wait(2)
     thread=Thread(target=work,name='aeat-preproduction',daemon=True);thread.start();return stop
 
-def connection_check(c,user,data_dir):
-    auth.require_admin(user);settings=config(c,user['emitterId'])
+def connection_check(settings,user,data_dir):
+    """Network only: the caller reads the settings and releases the database first."""
+    auth.require_admin(user)
     context=tls_context(settings,data_dir,user['emitter']['nif'])
     invoice={'date':now()[:10],'number':'ADG-CONEXION-PRUEBAS','companySnapshot':user['emitter']}
-    response=transport(xml.query(invoice),context);root=xml.parse(response)
+    try:response=transport(xml.query(invoice),context)
+    except (OSError,http.client.HTTPException):raise DomainError('No se ha podido conectar con el servicio de pruebas de la AEAT. Revisa la conexión a Internet y vuelve a intentarlo.')
+    root=xml.parse(response)
     if root.xpath('//*[local-name()="Fault"]'): raise DomainError('El certificado conecta, pero AEAT ha rechazado la consulta: '+xml.text(root,'faultstring')[:250])
     replies=root.xpath('//*[local-name()="RespuestaConsultaFactuSistemaFacturacion"]')
     if not replies: raise DomainError('No se ha recibido una respuesta de consulta reconocible.')

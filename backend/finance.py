@@ -38,15 +38,20 @@ def initialize(state):
     state.setdefault('financeVersion', 1)
     return state
 
+# Identifiers are written into HTML attributes by the interface: no quotes, spaces or markup.
+SAFE_ID=re.compile(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,199}')
+REFERENCES=['clientId','originalId','ownerId','createdByUserId','issuedByUserId','invoiceId','paymentId','attachmentId','allocationId','importBatchId','documentId','emitterId']
+
 def check_state_shape(state):
     if not isinstance(state,dict) or not isinstance(state.get('company'),dict):raise DomainError('Faltan los datos de empresa.')
     for key in ['invoices','clients','payments','allocations','adjustments','refunds','paymentAdjustments','importBatches']:
         items=state.get(key)
         if not isinstance(items,list) or any(not isinstance(item,dict) for item in items):raise DomainError(f'La colección {key} debe contener registros válidos.')
         for item in items:
-            if not isinstance(item.get('id'),str) or not item['id'] or len(item['id'])>200:raise DomainError(f'Falta un identificador válido en {key}.')
-            for field in ['clientId','originalId','ownerId','createdByUserId','issuedByUserId','invoiceId','paymentId','attachmentId']:
-                if item.get(field) is not None and not isinstance(item[field],str):raise DomainError(f'El campo {field} no es válido.')
+            if not isinstance(item.get('id'),str) or not SAFE_ID.fullmatch(item['id']):raise DomainError(f'Falta un identificador válido en {key}.')
+            for field in REFERENCES:
+                value=item.get(field)
+                if value is not None and (not isinstance(value,str) or (value and not SAFE_ID.fullmatch(value))):raise DomainError(f'El campo {field} no es válido.')
     for invoice in state['invoices']:
         if 'isExample' in invoice and type(invoice['isExample']) is not bool:raise DomainError('La opción Factura de ejemplo debe estar marcada o desmarcada.')
         if invoice.get('isExample') and (invoice.get('vfEnabled') or invoice.get('vfTest') or invoice.get('verifactu')):raise DomainError('Una factura de ejemplo no puede utilizar VERI*FACTU.')
@@ -66,7 +71,8 @@ def active(item, cutoff=None):
 
 def invoice_number_key(value):
     text=str(value).strip().upper().replace(' ','')
-    match=re.fullmatch(r'(ADG(?:-R)?)-([1-4])[º°]-(20\d\d)-(\d+)',text)
+    # Recognize both current T and historical ordinal quarterly series.
+    match=re.fullmatch(r'(.+?)-([1-4])[Tº°]-(20\d\d)-(\d+)',text)
     if match:return f'{match[1]}:{match[2]}:{match[3]}:{int(match[4])}'
     match=re.fullmatch(r'(\d+)[-/](20\d\d)',text)
     if match:return f'F:{match[2]}:{int(match[1])}'
@@ -81,7 +87,7 @@ def invoice_numbers(invoice):
 SERIES_STOPWORDS={'de','del','la','las','el','los','y','e','i','en','cia','sl','sa','slu','sll','slp','scp','sc','cb','sociedad','limitada','anonima','cooperativa'}
 SERIES_PATTERN=re.compile(r'[A-ZÑ0-9](?:[A-ZÑ0-9º/._-]{0,38}[A-ZÑ0-9º])?')
 PREFIX_PATTERN=re.compile(r'[A-ZÑ0-9]{1,10}')
-QUARTERLY_SERIES=re.compile(r'(.+)-[1-4]º-(20\d\d)')
+QUARTERLY_SERIES=re.compile(r'(.+)-[1-4][Tº°]-(20\d\d)')
 
 def series_initials(name):
     text=unicodedata.normalize('NFKD',str(name or '')).replace('.','')
@@ -102,7 +108,7 @@ def invoice_series(state,invoice):
     """A custom series applies only without VERI*FACTU; otherwise the issuer default with quarter and year."""
     if invoice.get('series') and not invoice.get('vfEnabled'):return invoice['series']
     year=invoice['date'][:4];quarter=(int(invoice['date'][5:7])-1)//3+1
-    return f"{default_series_prefix(state)}{'-R' if invoice.get('originalId') else ''}-{quarter}º-{year}"
+    return f"{default_series_prefix(state)}{'-R' if invoice.get('originalId') else ''}-{quarter}T-{year}"
 
 def next_invoice_number(state,invoice):
     require_date(invoice.get('date'))
@@ -116,16 +122,17 @@ def next_invoice_number(state,invoice):
                 if match:maximum=max(maximum,int(match[1]))
         return f'{series}-{year}-{maximum+1:02d}'
     series=invoice_series(state,invoice);maximum=0
-    # One counter per series. Quarterly series (PS-4º-2026) count annually across quarters.
+    # One counter per series. Quarterly series (PS-4T-2026) count annually across quarters.
     # All historical names remain reserved, including numbers changed manually.
     quarterly=QUARTERLY_SERIES.fullmatch(series)
     if quarterly:
         prefix,year=quarterly[1],quarterly[2]
-        pattern=re.compile(re.escape(prefix)+r'-[1-4]º-'+year+r'-(\d+)')
+        pattern=re.compile(re.escape(prefix)+r'-[1-4][Tº°]-'+year+r'-(\d+)')
         legacy=('R' if prefix=='ADG-R' else 'F') if prefix in ('ADG','ADG-R') else None
     else:
         pattern=re.compile(re.escape(series)+r'-(\d+)');legacy=None
-    issued=[value for item in state['invoices'] if item.get('status')=='issued' and not item.get('isExample') for value in invoice_numbers(item)]
+    # A voided invoice frees its numbers: if it was the last one of the series, the next invoice takes it again.
+    issued=[value for item in state['invoices'] if item.get('status')=='issued' and not item.get('isExample') and not item.get('voided') for value in invoice_numbers(item)]
     for value in issued:
         match=pattern.fullmatch(str(value or '').strip().upper().replace(' ','').replace('°','º'))
         if match:maximum=max(maximum,int(match[1]))
@@ -153,6 +160,7 @@ def issue_invoice(state,invoice_id):
     original=next((i for i in state['invoices'] if i['id']==invoice.get('originalId')),None)
     if original and bool(original.get('isExample'))!=bool(invoice.get('isExample')):raise DomainError('Una rectificativa debe conservar la condición de ejemplo de su factura original.')
     if original and bool(original.get('vfTest'))!=bool(invoice.get('vfEnabled')):raise DomainError('Una rectificativa debe usar el mismo entorno que su factura original.')
+    if original and original.get('voided'):raise DomainError('La factura que rectifica está anulada.')
     client=next((c for c in state['clients'] if c['id']==invoice.get('clientId')),None)
     if not client or any(not str(client.get(k,'')).strip() for k in ['name','nif','address']):raise DomainError('Completa el cliente y sus datos fiscales antes de emitir.')
     if any(not str(state['company'].get(k,'')).strip() for k in ['name','nif','address']):raise DomainError('Completa los datos fiscales de la empresa.')
@@ -160,23 +168,38 @@ def issue_invoice(state,invoice_id):
     if not invoice.get('lines'):raise DomainError('Añade al menos un concepto.')
     for line in invoice['lines']:
         try:
-            qty=Decimal(str(line.get('qty','')).replace(',','.'));price=Decimal(str(line.get('price','')).replace(',','.'));tax=Decimal(str(line.get('tax','')).replace(',','.'))
+            qty=Decimal(str(line.get('qty',1)).replace(',','.'));price=Decimal(str(line.get('price','')).replace(',','.')) if has_price(line) else Decimal(0);tax=Decimal(str(line.get('tax','')).replace(',','.'))
             if not qty.is_finite() or not price.is_finite() or qty<=0 or price<0 or tax not in [0,4,10,21] or not str(line.get('description','')).strip():raise ValueError()
         except (InvalidOperation,ValueError,TypeError):raise DomainError('Revisa los conceptos, cantidades, precios e impuestos.')
+    if any(has_price(line) for line in invoice['lines']):invoice.pop('globalPrice',None);invoice.pop('globalTax',None)
+    else:
+        if not has_price({'price':invoice.get('globalPrice')}):raise DomainError('Indica el precio de algún concepto o el importe de la factura.')
+        try:
+            price=Decimal(str(invoice['globalPrice']).strip().replace(',','.'));tax=Decimal(str(invoice.get('globalTax',21)).replace(',','.'))
+            if not price.is_finite() or price<0 or tax not in [0,4,10,21]:raise ValueError()
+        except (InvalidOperation,ValueError,TypeError):raise DomainError('Revisa el importe y el IVA de la factura.')
     if invoice.get('originalId') and not str(invoice.get('reason','')).strip():raise DomainError('Indica el motivo de la rectificación.')
     from .templates import template_id,rate
     rate(invoice.get('withholdingRate',0))
-    invoice['presentationSnapshot']={'version':3,'showNumber':bool(invoice.get('vfEnabled')),'showHonorariaTitle':False}
+    invoice['presentationSnapshot']={'version':5,'showNumber':True,'showHonorariaTitle':False}
     invoice['templateSnapshot']={'id':template_id(invoice,state['company'],state.get('emitterId','adg-original')=='adg-original'),'version':1}
     invoice.update(number=next_invoice_number(state,invoice),status='issued',issuedAt=now(),clientSnapshot=deepcopy(client),companySnapshot=deepcopy(state['company']))
     return invoice
+
+def has_price(line): return str(line.get('price') if line.get('price') is not None else '').strip()!=''
+
+def priced_lines(invoice):
+    """Lines without a price are descriptive; when none has one, the invoice-wide price covers them all."""
+    priced=[line for line in invoice.get('lines',[]) if has_price(line)]
+    if priced or not has_price({'price':invoice.get('globalPrice')}):return priced
+    return [{'qty':1,'price':invoice['globalPrice'],'tax':invoice.get('globalTax',21)}]
 
 def invoice_totals(invoice):
     if invoice.get('historicalTotals'):
         h=invoice['historicalTotals']; return h['baseCents'], h['vatCents'], h['totalCents']
     base=vat=0
-    for line in invoice.get('lines', []):
-        b = cents(Decimal(str(line.get('qty',0)).replace(',','.')) * Decimal(str(line.get('price',0)).replace(',','.')))
+    for line in priced_lines(invoice):
+        b = cents(Decimal(str(line.get('qty',1)).replace(',','.')) * Decimal(str(line.get('price',0)).replace(',','.')))
         base += b
         vat += int((Decimal(b)*Decimal(str(line.get('tax',0)))/100).quantize(Decimal('1'), rounding=ROUND_HALF_UP))
     from .templates import withholding
@@ -203,7 +226,7 @@ def ancestry(i, invoices):
         seen.add(i['id']);result.append(i['originalId']);i=invoices[i['originalId']]
     return result
 
-def balances(state, cutoff=None):
+def balances(state, cutoff=None, totals=invoice_totals):
     cutoff=cutoff or today(); out={}
     payments={p['id']:p for p in state.get('payments',[]) if active(p,cutoff)}
     groups=roots(state,cutoff);families={i['id']:root for root,g in groups.items() for i in g['members']}
@@ -214,7 +237,7 @@ def balances(state, cutoff=None):
             if root is None or not active(movement,cutoff) or (key=='allocations' and movement['paymentId'] not in payments):continue
             target[root]=target.get(root,0)+movement['amountCents']
     for root_id,g in groups.items():
-        ids={i['id'] for i in g['members']}; b,v,t=invoice_totals(g['current'])
+        ids={i['id'] for i in g['members']}; b,v,t=totals(g['current'])
         paid=paid_by_root.get(root_id,0);adjusted=adjusted_by_root.get(root_id,0);refunded=refunded_by_root.get(root_id,0)
         remaining=t-paid-adjusted+refunded
         out[root_id]={'rootId':root_id,'invoice':g['current'],'original':g['root'],'memberIds':list(ids),'baseCents':b,'vatCents':v,'totalCents':t,'paidCents':paid-refunded,'adjustedCents':adjusted,'pendingCents':max(0,remaining),'creditCents':max(0,-remaining),'status':'paid' if remaining<=0 else 'partial' if paid+adjusted-refunded>0 else 'unpaid'}
@@ -239,7 +262,11 @@ def validate_state(state):
         ids=[x.get('id') for x in state[key]]
         if any(not isinstance(x,str) or not x for x in ids) or len(ids)!=len(set(ids)): raise DomainError(f'Hay identificadores duplicados en {key}.')
     invoices={i['id']:i for i in state['invoices']};payments={p['id']:p for p in state['payments']}
-    seen_numbers=set()
+    seen_numbers=set();computed={}
+    def totals(invoice):
+        # Totals do not depend on the cutoff date: compute each invoice once per validation.
+        if invoice['id'] not in computed:computed[invoice['id']]=invoice_totals(invoice)
+        return computed[invoice['id']]
     for i in invoices.values():
         require_date(i.get('date'))
         if i.get('status') not in ['draft','issued'] or not isinstance(i.get('lines'),list): raise DomainError('Factura no válida.')
@@ -250,7 +277,7 @@ def validate_state(state):
             history=i.get('numberHistory',[])
             if not isinstance(history,list) or any(not isinstance(h,dict) or not all(isinstance(h.get(k),str) and h[k].strip() for k in ['oldNumber','newNumber','changedAt']) for h in history):
                 raise DomainError('El historial de numeración no es válido.')
-            if not i.get('isDemo'):
+            if not i.get('isDemo') and not i.get('voided'):
                 keys={invoice_number_key(n) for n in invoice_numbers(i)}
                 if keys & seen_numbers: raise DomainError(f'Número de factura duplicado o utilizado anteriormente: {number}.')
                 seen_numbers.update(keys)
@@ -259,7 +286,7 @@ def validate_state(state):
             for k in ['baseCents','vatCents','totalCents']:amount(h.get(k),False)
             if h['baseCents']+h['vatCents']-amount(h.get('withholdingCents',0),False)!=h['totalCents']: raise DomainError('Los importes históricos no cuadran.')
         elif i['status']=='issued':
-            try: invoice_totals(i)
+            try: totals(i)
             except Exception: raise DomainError('Revisa los conceptos e importes de la factura.')
         if i.get('originalId'):
             if i['originalId'] in invoices and bool(i.get('isExample'))!=bool(invoices[i['originalId']].get('isExample')):raise DomainError('Una rectificativa debe conservar la condición de ejemplo de su factura original.')
@@ -287,10 +314,11 @@ def validate_state(state):
                 if a['date']<p['date']:raise DomainError('La aplicación no puede ser anterior al ingreso.')
                 if a.get('invoiceId') and a['date']<invoices[a['invoiceId']]['date']:raise DomainError('La aplicación no puede ser anterior a la factura. Registra un anticipo.')
                 if a.get('invoiceId') and bool(p.get('vfTest'))!=bool(invoices[a['invoiceId']].get('vfTest')):raise DomainError('No se pueden mezclar cobros de pruebas y facturas reales.')
-    validate_chronology(state,payments)
+                if key=='allocations' and p.get('clientId') and invoices[a['invoiceId']].get('clientId')!=p['clientId']:raise DomainError('Un cobro solo puede aplicarse a facturas de su propio cliente.')
+    validate_chronology(state,payments,totals)
     return state
 
-def validate_chronology(state,payments):
+def validate_chronology(state,payments,totals=invoice_totals):
     # Each family/payment has its own timeline. Avoid rescanning the whole company
     # once for every invoice date on each automatic draft save.
     groups=roots(state,'9999-12-31');by_invoice={i['id']:root for root,g in groups.items() for i in g['members']}
@@ -318,13 +346,20 @@ def validate_chronology(state,payments):
             if any(value>paid_by_family.get(root,0) for root,value in refunded_by_family.items()):raise DomainError('Una devolución supera lo cobrado en esa factura mediante ese ingreso.')
     for scoped in families.values():
         movements=scoped['allocations']+scoped['adjustments']+scoped['refunds']
-        if not movements and all(invoice_totals(i)[2]>=0 for i in scoped['invoices']):continue
+        if not movements and all(totals(i)[2]>=0 for i in scoped['invoices']):continue
         ids={a['paymentId'] for a in scoped['allocations']};scoped['payments']=[payments[p] for p in ids]
         events=movements+scoped['invoices']+scoped['payments']
         dates={today()} | {a['date'] for a in events} | {a['voidDate'] for a in events if a.get('voidDate')}
         for cutoff in dates:
-            for b in balances(scoped,cutoff).values():
+            for b in balances(scoped,cutoff,totals).values():
                 if b['creditCents'] and len(b['memberIds'])<2:raise DomainError('El movimiento supera el saldo de la factura.')
+
+def payment_client(state,payment):
+    """The client a receipt belongs to: stored, or the one shared by its applications (older receipts)."""
+    if payment.get('clientId'):return payment['clientId']
+    invoices={i['id']:i for i in state['invoices']}
+    clients={invoices[a['invoiceId']].get('clientId') for a in state['allocations'] if a.get('paymentId')==payment['id'] and a.get('invoiceId') in invoices}
+    return next(iter(clients)) if len(clients)==1 else None
 
 def add_allocations(state,payment,items,allocation_date=None,rounding=True):
     requested=[]
@@ -338,6 +373,11 @@ def add_allocations(state,payment,items,allocation_date=None,rounding=True):
         d=max(allocation_date or payment['date'],payment['date'],b['invoice']['date'])
         requested.append((b,value,d))
     if len({b['rootId'] for b,_,_ in requested})!=len(requested):raise DomainError('No repitas la misma factura en el reparto.')
+    if requested:
+        # A receipt only pays invoices of the client who paid; older receipts are bound on their first application.
+        clients={b['invoice'].get('clientId') for b,_,_ in requested};owner=payment_client(state,payment)
+        if len(clients)>1 or None in clients or (owner and clients!={owner}):raise DomainError('Un cobro solo puede aplicarse a facturas de su propio cliente.')
+        payment['clientId']=next(iter(clients))
     total=sum(v for _,v,_ in requested);cash=available(state,payment['id']);short=max(0,total-cash)
     if short>2 or (short and not rounding):raise DomainError('El reparto supera el saldo disponible del cobro.')
     for index,(b,value,d) in enumerate(requested):
@@ -368,6 +408,7 @@ def command(state,cmd):
         if not invoice or invoice.get('status')!='issued':raise DomainError('Selecciona una factura emitida para cambiar su número.')
         if invoice.get('isExample'):raise DomainError('Las facturas de ejemplo conservan su numeración EJEMPLO. Puedes duplicarlas para crear otra muestra.')
         if invoice.get('verifactu') or invoice.get('vfTest'):raise DomainError('Las facturas VERI*FACTU emitidas son inmodificables, incluido su número.')
+        if invoice.get('voided'):raise DomainError('Las facturas anuladas conservan su número.')
         value=cmd.get('number')
         if not isinstance(value,str) or not value.strip() or len(value.strip())>80 or any(ord(c)<32 or ord(c)==127 for c in value):
             raise DomainError('Indica un número de factura de entre 1 y 80 caracteres, sin saltos de línea.')
@@ -375,7 +416,7 @@ def command(state,cmd):
         if number.upper().startswith('EJEMPLO'):raise DomainError('La numeración EJEMPLO está reservada a las facturas de ejemplo.')
         if number==old:raise DomainError('El número de factura no ha cambiado.')
         for other in state['invoices']:
-            if other['id']!=invoice['id'] and other.get('status')=='issued' and (invoice.get('isDemo') or not other.get('isDemo')):
+            if other['id']!=invoice['id'] and other.get('status')=='issued' and not other.get('voided') and (invoice.get('isDemo') or not other.get('isDemo')):
                 if key in {invoice_number_key(n) for n in invoice_numbers(other)}:
                     raise DomainError(f'El número {number} ya pertenece a otra factura o figura en su historial.')
         stamp=now()
@@ -389,7 +430,16 @@ def command(state,cmd):
         test_types={bool(next((i for i in state['invoices'] if i['id']==a.get('invoiceId')),{}).get('vfTest')) for a in cmd.get('allocations',[])}
         if len(test_types)>1:raise DomainError('Los cobros de pruebas y los de facturas reales deben mantenerse separados.')
         if test_types=={True}:p['vfTest']=True
-        state['payments'].append(p);add_allocations(state,p,cmd.get('allocations',[]),cmd.get('allocationDate'),cmd.get('rounding',True));description='Registrar cobro'
+        if 'clientId' in cmd:
+            client=next((c for c in state['clients'] if c['id']==cmd['clientId']),None)
+            if not client:raise DomainError('Elige el cliente que ha pagado.')
+            p['clientId']=client['id']
+        state['payments'].append(p);add_allocations(state,p,cmd.get('allocations',[]),cmd.get('allocationDate'),cmd.get('rounding',True))
+        if not p.get('clientId'):raise DomainError('Elige el cliente que ha pagado.')
+        # The payer is the client itself.
+        client=next((c for c in state['clients'] if c['id']==p['clientId']),None)
+        if client:p['payer']=client['name']
+        description='Registrar cobro'
     elif kind=='allocate':
         p=next((p for p in state['payments'] if p['id']==cmd.get('paymentId') and active(p)),None)
         if not p: raise DomainError('El cobro ya no está disponible.')
@@ -434,5 +484,23 @@ def command(state,cmd):
             for a in state['adjustments']:
                 if a.get('allocationId')==item['id'] and not a.get('voidDate'):a.update(voidDate=void_date,voidReason=reason)
         item.update(voidDate=void_date,voidReason=reason);description='Anular movimiento: '+reason
+    elif kind in ['delete_invoice','void_invoice']:
+        invoice=next((i for i in state['invoices'] if i['id']==cmd.get('invoiceId')),None)
+        if not invoice:raise DomainError('La factura ya no existe. Recarga para ver los datos actuales.')
+        if invoice.get('verifactu') or invoice.get('vfTest'):raise DomainError('Las facturas VERI*FACTU no se pueden eliminar ni anular.')
+        if any(i.get('originalId')==invoice['id'] and not i.get('voided') for i in state['invoices']):raise DomainError('Esta factura tiene una rectificativa. Elimina o anula primero la rectificativa.')
+        movements=[m for key in ['allocations','adjustments','refunds'] for m in state[key] if m.get('invoiceId')==invoice['id']]
+        if kind=='delete_invoice':
+            # Only documents without fiscal value disappear: drafts and examples.
+            if invoice.get('status')=='issued' and not invoice.get('isExample'):raise DomainError('Las facturas emitidas no se eliminan: se anulan y se conservan en el archivo.')
+            if movements:raise DomainError('La factura tiene movimientos de cobro y no se puede eliminar.')
+            state['invoices']=[i for i in state['invoices'] if i['id']!=invoice['id']]
+            description='Eliminar borrador' if invoice.get('status')=='draft' else 'Eliminar factura de ejemplo: '+invoice['number']
+        else:
+            if invoice.get('status')!='issued' or invoice.get('isExample'):raise DomainError('Solo se anulan facturas emitidas. Los borradores y los ejemplos se eliminan.')
+            if invoice.get('voided'):raise DomainError('La factura ya está anulada.')
+            if any(not m.get('voidDate') for m in movements):raise DomainError('La factura tiene cobros o ajustes aplicados. Anúlalos primero desde su historial de cobros.')
+            invoice.update(voided=True,voidedAt=now())
+            description='Anular factura: '+invoice['number']
     else:raise DomainError('Operación desconocida.')
     return validate_state(state),description

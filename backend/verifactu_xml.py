@@ -7,7 +7,7 @@ import base64, hashlib, io, re
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from urllib.parse import urlencode
-from .finance import DomainError, cents, invoice_totals
+from .finance import DomainError, cents, invoice_totals, priced_lines
 
 try:
     from lxml import etree as E
@@ -75,7 +75,14 @@ def hash_fields(fields):
     value='&'.join(key+'='+str(value).strip() for key,value in fields)
     return hashlib.sha256(value.encode('utf-8')).hexdigest().upper()
 
+def validate_invoice_number(value):
+    # AEAT Validaciones v1.2.2, section 3.1.3.1: printable ASCII except " ' < > =.
+    if not isinstance(value,str) or not value.strip() or len(value)>60 or any(ord(ch)<32 or ord(ch)>126 or ch in '\"\'<>=' for ch in value):
+        raise DomainError('El número de factura de VERI*FACTU debe tener entre 1 y 60 caracteres ASCII imprimibles y no admite comillas, apóstrofos, <, > ni =. Para el trimestre utiliza 4T, no 4º.')
+    return value
+
 def invoice_id(parent,invoice,cancel=False):
+    validate_invoice_number(invoice['number'])
     ident=node(parent,'IDFactura')
     suffix='Anulada' if cancel else ''
     node(ident,'IDEmisorFactura'+suffix,nif(invoice['companySnapshot']['nif']))
@@ -130,8 +137,8 @@ def build(invoice,identity,previous,stamp,multi=False,kind='alta',correction=Non
         node(recipient,'NombreRazon',(correction or {}).get('recipientName') or customer['name'])
         node(recipient,'NIF',nif((correction or {}).get('recipientNif') or customer['nif']))
         breakdown=node(record,'Desglose');groups={}
-        for line in invoice['lines']:
-            rate=Decimal(str(line['tax']).replace(',','.'));base=cents(Decimal(str(line['qty']).replace(',','.'))*Decimal(str(line['price']).replace(',','.')))
+        for line in priced_lines(invoice):
+            rate=Decimal(str(line['tax']).replace(',','.'));base=cents(Decimal(str(line.get('qty',1)).replace(',','.'))*Decimal(str(line['price']).replace(',','.')))
             vat=int((Decimal(base)*rate/100).quantize(Decimal('1'),rounding=ROUND_HALF_UP))
             b,v=groups.get(rate,(0,0));groups[rate]=(b+base,v+vat)
         for rate,(base,vat) in sorted(groups.items()):

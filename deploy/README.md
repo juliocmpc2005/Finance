@@ -16,7 +16,20 @@ OVHcloud anuncia [VPS-1 desde 3,81 €/mes sin IVA](https://www.ovhcloud.com/es-
 
 Abrir solamente HTTP/HTTPS para Caddy y restringir SSH. Mantener la API y SQLite fuera del acceso directo a Internet. Configurar actualizaciones, reinicio del servicio, alertas de espacio/memoria y una copia diaria externa cifrada del estado y los justificantes, con retención de al menos 30 días. La copia SQLite debe generarse con su API de backup o con la aplicación detenida; no copiar solamente el archivo principal mientras hay escrituras WAL. Conservar y ensayar también la recuperación de las cuentas.
 
-Las pruebas sintéticas en el Mac local incluyeron 5.000 facturas y 3.334 cobros, 10 lectores concurrentes y una terminación forzada durante una escritura. El 19/10/2026 se repitieron con Waitress y con el motor anterior sobre el mismo código, con resultados equivalentes (5.000 facturas: mediana de lectura de 615 ms frente a 624 ms; 50 emisiones simultáneas en 4,98 s frente a 4,94 s). No son una medición del VPS: al contratarlo hay que repetir la carga y comprobar memoria, latencia, copias, restauración y permisos desde fuera de la oficina. El informe está en [reviews/2026-10-17-fallos-y-capacidad.md](../reviews/2026-10-17-fallos-y-capacidad.md).
+Las pruebas sintéticas en el Mac local incluyeron 5.000 facturas y 3.334 cobros, 10 lectores concurrentes y una terminación forzada durante una escritura. El 19/10/2026 se repitieron con Waitress y con el motor anterior sobre el mismo código, con resultados equivalentes (5.000 facturas: mediana de lectura de 615 ms frente a 624 ms; 50 emisiones simultáneas en 4,98 s frente a 4,94 s). Después se optimizaron las lecturas: con 10 lectores simultáneos, la mediana bajó a 193 ms con 5.000 facturas y a 38 ms con 1.000. No son una medición del VPS: al contratarlo hay que repetir la carga y comprobar memoria, latencia, copias, restauración y permisos desde fuera de la oficina. El informe está en [reviews/2026-10-17-fallos-y-capacidad.md](../reviews/2026-10-17-fallos-y-capacidad.md).
+
+## Instalación automática en Ubuntu Server 24.04 LTS
+
+`install-ubuntu.sh` realiza los pasos de la sección siguiente en un servidor Ubuntu 24.04 recién creado: actualizaciones de seguridad automáticas, Python, Node.js 24 LTS (NodeSource), Caddy (repositorio oficial), usuario `adg-finance`, código desde GitHub con una clave de despliegue de solo lectura, dependencias, Chromium para los PDF, servicio systemd y cortafuegos (solo SSH, y HTTP/HTTPS si hay dominio). Se puede volver a ejecutar: actualiza el código y reinicia el servicio.
+
+1. Hacer commit y push a GitHub de la versión que se quiere instalar: el servidor instala la rama `main` publicada, no los cambios locales.
+2. Copiar el script al servidor y ejecutarlo como root: `scp deploy/install-ubuntu.sh usuario@servidor:` y `ssh usuario@servidor sudo bash install-ubuntu.sh`. La primera vez muestra una clave pública: añadirla en GitHub → repositorio → Settings → Deploy keys, **sin** permiso de escritura, y repetir el comando.
+3. Trasladar los datos desde el Mac, con la aplicación local detenida: `bash deploy/migrate-data.sh usuario@servidor`. Copia SQLite de forma consistente, los justificantes, los documentos, las copias diarias y la clave del servidor (`vf-secrets/master.key`); conserva en el servidor los datos que hubiera y cierra todas las sesiones.
+4. Sin dominio, la aplicación no queda expuesta a Internet: acceder con `ssh -L 4173:127.0.0.1:4173 usuario@servidor` y abrir `http://localhost:4173`.
+5. Con dominio: apuntar su DNS al servidor y ejecutar `sudo bash /opt/adg-finance/deploy/install-ubuntu.sh --domain finance.empresa.es`. El dominio queda guardado en `/etc/default/adg-finance` para las siguientes actualizaciones; `--no-domain` lo retira.
+6. Actualizar después de publicar cambios en GitHub: `sudo bash /opt/adg-finance/deploy/install-ubuntu.sh`.
+
+Los pasos de copia externa y prueba de carga (punto 7 de la sección siguiente) siguen siendo manuales.
 
 ## Cuando exista el servidor
 

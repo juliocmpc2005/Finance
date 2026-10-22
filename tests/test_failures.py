@@ -1,5 +1,5 @@
 """Destructive tests run exclusively against a temporary server/database."""
-import importlib.util,json,os,socket,sqlite3,tempfile,threading,unittest,uuid,time,base64
+import importlib.util,json,os,socket,sqlite3,tempfile,threading,unittest,uuid,time,base64,concurrent.futures
 from io import BytesIO
 from zipfile import ZipFile,ZIP_STORED
 from datetime import date,timedelta
@@ -87,7 +87,7 @@ class FailureTests(unittest.TestCase):
         with patch.object(self.module.documents,'render',side_effect=DomainError('Simulated snapshot failure')):
             self.assertEqual(self.client.command({'type':'issue_invoice','invoiceId':'capture-failure'})[0],400)
         self.assertEqual(self.client.state(),before)
-        status,result,_=self.client.command({'type':'issue_invoice','invoiceId':'capture-failure'});self.assertEqual(status,200,result);self.assertEqual(next(i for i in result['state']['invoices'] if i['id']=='capture-failure')['number'],f'ADG-{(int(today()[5:7])-1)//3+1}º-{today()[:4]}-01')
+        status,result,_=self.client.command({'type':'issue_invoice','invoiceId':'capture-failure'});self.assertEqual(status,200,result);self.assertEqual(next(i for i in result['state']['invoices'] if i['id']=='capture-failure')['number'],f'ADG-{(int(today()[5:7])-1)//3+1}T-{today()[:4]}-01')
     def test_database_failure_rolls_back_the_entire_command(self):
         before=self.client.state();original=self.module.store
         def fail_after_write(*args,**kwargs):original(*args,**kwargs);raise sqlite3.OperationalError('Simulated write failure before commit')
@@ -179,6 +179,46 @@ class FailureTests(unittest.TestCase):
             Client(f'http://127.0.0.1:{port}').request('/api/auth/login',{'email':'proxied@example.test','password':'incorrecta'},headers={'Host':host,'X-Forwarded-For':'203.0.113.9'})
             self.assertEqual(self.login_attempts('address:203.0.113.9'),1)
         finally:self.stop(server,thread)
+    def test_aeat_connection_check_does_not_block_other_saves(self):
+        # The AEAT call can take up to 25 s: no database transaction may stay open meanwhile.
+        entered=threading.Event()
+        def slow_transport(*_):entered.set();time.sleep(6);raise self.module.DomainError('Sin conexión de prueba.')
+        with self.module.connect() as database:database.execute('UPDATE sessions SET last_seen=last_seen-600')
+        with patch.object(self.module.verifactu,'tls_context',return_value=None),patch.object(self.module.verifactu,'transport',slow_transport):
+            result={};worker=threading.Thread(target=lambda:result.update(check=self.client.request('/api/verifactu/check',{})[0]));worker.start()
+            try:
+                self.assertTrue(entered.wait(5));snapshot=self.client.state();snapshot['state']['company']['notes']='Guardado durante la comprobación'
+                started=time.monotonic();status,data,_=self.client.request('/api/state',snapshot)
+                self.assertEqual(status,200,data);self.assertLess(time.monotonic()-started,2)
+            finally:worker.join(15)
+        self.assertEqual(result['check'],400)
+    def test_password_verification_does_not_hold_the_database_lock(self):
+        # scrypt takes ~0.3 s and ~134 MB: other people keep working while someone signs in.
+        entered=threading.Event();original=self.module.auth.password_matches
+        def slow(*args):entered.set();time.sleep(1.5);return original(*args)
+        with patch.object(self.module.auth,'password_matches',slow):
+            result={};worker=threading.Thread(target=lambda:result.update(login=Client(self.url).login('fallos@example.test')[0]));worker.start()
+            try:
+                self.assertTrue(entered.wait(3));started=time.monotonic()
+                self.assertEqual(self.client.request('/api/state')[0],200);self.assertLess(time.monotonic()-started,.5)
+            finally:worker.join(5)
+        self.assertEqual(result['login'],200)
+    def test_login_limits_stay_exact_with_parallel_attempts(self):
+        address='address:127.0.0.1';before=self.login_attempts(address)
+        self.assertEqual(Client(self.url).login('fallos@example.test')[0],200);self.assertEqual(self.login_attempts(address),before)
+        email=uuid.uuid4().hex+'@example.test'
+        with concurrent.futures.ThreadPoolExecutor(10) as pool:statuses=list(pool.map(lambda _:Client(self.url).login(email,'incorrecta')[0],range(10)))
+        self.assertEqual(statuses.count(401),6);self.assertEqual(statuses.count(429),4)
+        self.assertEqual(self.login_attempts('email:'+email),6);self.assertEqual(self.login_attempts(address),before+6)
+        with self.module.connect() as database:database.execute('DELETE FROM login_attempts')
+    def test_session_activity_is_written_at_most_once_a_minute(self):
+        def last_seen():
+            with self.module.connect() as database:return [row[0] for row in database.execute('SELECT last_seen FROM sessions ORDER BY last_seen')]
+        with self.module.connect() as database:database.execute('UPDATE sessions SET last_seen=last_seen-120')
+        stale=last_seen();self.assertEqual(self.client.request('/api/state')[0],200);touched=last_seen()
+        self.assertNotEqual(touched,stale)
+        for _ in range(3):self.assertEqual(self.client.request('/api/auth/session')[0],200)
+        self.assertEqual(last_seen(),touched)
     def test_restore_previews_have_bounded_retention(self):
         body=json.dumps(fixture()).encode()
         for _ in range(5):self.assertEqual(self.client.request('/api/restore/preview',body,raw=True)[0],200)

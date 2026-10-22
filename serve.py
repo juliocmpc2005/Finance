@@ -13,7 +13,7 @@ from uuid import UUID
 from zipfile import ZipFile, ZIP_DEFLATED, is_zipfile, BadZipFile
 from backend.finance import initialize, validate_state, command, DomainError, now, uid
 from backend.importer import parse_xlsx, import_commit
-from backend import auth, access, emitters, templates, documents, emitter_drafts, verifactu, workspace_retention as retention_rules
+from backend import auth, access, emitters, templates, documents, emitter_drafts, verifactu, mailer, workspace_retention as retention_rules
 
 ROOT=Path(__file__).resolve().parent
 DATA=Path(os.environ.get('ADG_DATA_DIR',ROOT/'data'));DATA.mkdir(parents=True,exist_ok=True)
@@ -73,14 +73,18 @@ with connect() as c:
     emitters.initialize_schema(c)
     documents.initialize_schema(c)
     verifactu.initialize_schema(c)
+    mailer.initialize_schema(c)
     retention_rules.initialize_schema(c)
     c.execute('CREATE TABLE IF NOT EXISTS emitter_operations(actor_id TEXT NOT NULL,emitter_id TEXT NOT NULL,operation_key TEXT NOT NULL,signature TEXT NOT NULL,revision INTEGER NOT NULL,PRIMARY KEY(actor_id,emitter_id,operation_key))')
     c.execute('INSERT OR IGNORE INTO emitter_operations SELECT actor_id,emitter_id,operation_key,signature,revision FROM operations')
 
-def current(c,emitter_id=emitters.DEFAULT):
+def current_body(c,emitter_id=emitters.DEFAULT):
     if emitter_id==emitters.DEFAULT:r=c.execute('SELECT revision,body FROM state WHERE id=1').fetchone()
     else:r=c.execute('SELECT revision,body FROM emitter_state WHERE emitter_id=?',(emitter_id,)).fetchone()
-    return (r['revision'],json.loads(r['body'])) if r else (0,None)
+    return (r['revision'],r['body']) if r else (0,None)
+def current(c,emitter_id=emitters.DEFAULT):
+    revision,body=current_body(c,emitter_id)
+    return revision,(json.loads(body) if body is not None else None)
 def store(c,state,revision,description,user=None,retention=True):
     ident=user.get('emitterId',emitters.DEFAULT) if user else emitters.DEFAULT
     previous=current(c,ident)[1] if retention else None
@@ -327,7 +331,7 @@ class LocalHandler:
     def send_header(self,name,value):self._response_headers.append((name,str(value)))
     def end_headers(self):
         self._response_started=True
-        self.send_header('Cache-Control','no-store, no-cache, must-revalidate');self.send_header('X-Content-Type-Options','nosniff');self.send_header('Referrer-Policy','same-origin');self.send_header('X-Frame-Options','DENY');self.send_header('Content-Security-Policy',"frame-ancestors 'none'; object-src 'none'; base-uri 'self'")
+        self.send_header('Cache-Control','no-store, no-cache, must-revalidate');self.send_header('X-Content-Type-Options','nosniff');self.send_header('Referrer-Policy','same-origin');self.send_header('X-Frame-Options','DENY');self.send_header('Content-Security-Policy',"script-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'")
     def send_error(self,code):
         body=f'{code} {HTTPStatus(code).phrase}'.encode()
         self.send_response(code);self.send_header('Content-Type','text/plain; charset=utf-8');self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
@@ -350,7 +354,7 @@ class LocalHandler:
     def send_json(self,value,status=200,cookie=None):
         return self.respond(lambda:self._write_json(value,status,cookie))
     def _write_json(self,value,status=200,cookie=None):
-        data=json.dumps(value,ensure_ascii=False,allow_nan=False).encode();self.send_response(status);self.send_header('Content-Type','application/json; charset=utf-8');self.send_header('Content-Length',str(len(data)));
+        data=value if isinstance(value,bytes) else json.dumps(value,ensure_ascii=False,allow_nan=False,separators=(',',':')).encode();self.send_response(status);self.send_header('Content-Type','application/json; charset=utf-8');self.send_header('Content-Length',str(len(data)));
         if cookie is not None:self.send_header('Set-Cookie',self.session_cookie(cookie))
         self.end_headers()
         try:self.wfile.write(data)
@@ -384,6 +388,15 @@ class LocalHandler:
     def handle_auth(self,path):
         if not self.headers.get('Content-Type','').startswith('application/json'):return self.send_json({'error':'Se requiere JSON.'},415)
         data=json_object(self.read_body(32_000))
+        if path=='/api/auth/login':
+            with LOCK,connect() as c:
+                c.execute('BEGIN IMMEDIATE');attempt=auth.begin_login(c,data,self.client_address[0])
+            # The password check (scrypt) runs without the database lock.
+            matches=auth.verify_login(data,attempt)
+            with LOCK,connect() as c:
+                c.execute('BEGIN IMMEDIATE');result=auth.finish_login(c,attempt,matches)
+            if not result:return self.send_json({'error':'El correo o la contraseña no son correctos.'},401)
+            user,token=result;return self.send_json({'user':user},cookie=token)
         with LOCK,connect() as c:
             c.execute('BEGIN IMMEDIATE')
             if path=='/api/auth/setup':
@@ -396,10 +409,6 @@ class LocalHandler:
                     store(c,access.adopt_existing(state,user['id']),revision,'Asignar facturas existentes al administrador inicial',user)
                 token=auth.new_session(c,user['id']);c.commit()
                 return self.send_json({'user':user},cookie=token)
-            if path=='/api/auth/login':
-                result=auth.login(c,data,self.client_address[0]);c.commit()
-                if not result:return self.send_json({'error':'El correo o la contraseña no son correctos.'},401)
-                user,token=result;return self.send_json({'user':user},cookie=token)
             user=auth.session_user(c,self.headers)
             if path=='/api/auth/logout':
                 c.execute('DELETE FROM sessions WHERE token_hash=?',(auth.token_hash(auth.cookie_token(self.headers)),));auth.audit(c,user['id'],'Cerrar sesión');c.commit()
@@ -460,10 +469,16 @@ class LocalHandler:
                     emitters.require_root(self.account_user(c))
                     return self.send_json([dict(row) for row in c.execute('SELECT a.created_at,a.description,u.name AS actor FROM security_audit a LEFT JOIN users u ON u.id=a.actor_id ORDER BY a.id DESC LIMIT 200')])
                 user=self.require_user(c)
-                revision,state=current(c,user['emitterId'])
-                if path=='/api/state':return self.send_json({'revision':revision,'state':access.project_state(state,user)})
-                if path=='/api/text-history':return self.send_json(retention_rules.text_history(c,user,state))
+                if path=='/api/state':
+                    # Only the stored text is read under the lock; decoding and projection run once it is released.
+                    revision,body=current_body(c,user['emitterId'])
+                    if access.sees_everything(user):
+                        # The stored text is already the JSON an administrator receives: no decoding or re-encoding.
+                        data=('{"revision":%d,"state":%s}'%(revision,body if body is not None else 'null')).encode()
+                        return self.respond(lambda:self._write_json(data))
+                    return self.respond(lambda:self._write_json({'revision':revision,'state':access.project_state(json.loads(body) if body is not None else None,user,copy=False)}))
                 if path=='/api/verifactu/config':return self.send_json(verifactu.public_config(c,user))
+                if path=='/api/mail/config':return self.send_json(mailer.public_config(c,user))
                 if path=='/api/verifactu/records':return self.send_json({'records':verifactu.list_records(c,user)})
                 if path.startswith('/api/verifactu/records/'):
                     parts=path.split('/');record,invoice=verifactu.require_record(c,user,parts[4])
@@ -471,10 +486,6 @@ class LocalHandler:
                         body=record['request_xml'];self.send_response(200);self.send_header('Content-Type','application/xml; charset=utf-8');self.send_header('Content-Disposition','attachment; filename="registro-pruebas.xml"');self.send_header('Content-Length',str(len(body)));self.end_headers();return self.wfile.write(body)
                     attempts=[dict(r) for r in c.execute('SELECT created_at,status,error FROM vf_attempts WHERE record_id=? ORDER BY id DESC LIMIT 50',(record['id'],))]
                     return self.send_json({'record':{k:v for k,v in record.items() if k not in ['request_xml','invoice_json']},'attempts':attempts})
-                if path=='/api/template-example':
-                    auth.require_admin(user)
-                    if user['emitterId']!=emitters.DEFAULT:raise auth.AccessError('La plantilla original pertenece a arquitecturadeguardia.')
-                    example=json.loads((ROOT/'backend'/'template-example.json').read_text());example['companySnapshot']=state['company'];return self.send_json(example)
                 if path=='/api/team':
                     rows=c.execute('SELECT id,name FROM users WHERE is_root=1 OR id IN (SELECT user_id FROM memberships WHERE emitter_id=?) ORDER BY name',(user['emitterId'],)) if user['role']=='admin' else c.execute('SELECT id,name FROM users WHERE id=?',(user['id'],))
                     return self.send_json({'members':[dict(row) for row in rows]})
@@ -486,29 +497,29 @@ class LocalHandler:
                     entries=[dict(row) for row in rows]
                     if parse_qs(urlparse(self.path).query).get('excludeExamples')==['1']:entries=[entry for entry in entries if not entry['description'].startswith('Crear factura de ejemplo: ')]
                     return self.send_json(entries)
+                revision,state=current(c,user['emitterId'])
+                if path=='/api/text-history':return self.send_json(retention_rules.text_history(c,user,state))
+                if path=='/api/template-example':
+                    auth.require_admin(user)
+                    if user['emitterId']!=emitters.DEFAULT:raise auth.AccessError('La plantilla original pertenece a arquitecturadeguardia.')
+                    example=json.loads((ROOT/'backend'/'template-example.json').read_text());example['companySnapshot']=state['company'];return self.send_json(example)
                 if path.startswith('/api/documents/') or path.startswith('/api/document-versions/'):
                     ident=unquote(path.split('/')[3]);by_version=path.startswith('/api/document-versions/')
                     if by_version:
                         document=c.execute('SELECT * FROM documents WHERE id=? AND emitter_id=?',(ident,user['emitterId'])).fetchone()
                         if not document:raise auth.AccessError('Documento no disponible.',404)
                         invoice=access.require_own_invoice(state,user,document['invoice_id'])
-                    else:
+                    elif path.endswith('/versions'):
                         invoice=access.require_own_invoice(state,user,ident)
                         if invoice['status']!='issued':raise DomainError('El documento conservado está disponible después de emitir.')
-                        if path.endswith('/versions'):
-                            rows=c.execute('SELECT id,invoice_id,number,created_at FROM documents WHERE emitter_id=? AND invoice_id=? ORDER BY created_at DESC',(user['emitterId'],ident))
-                            return self.send_json({'documents':[documents.metadata(row) for row in rows]})
-                        document=c.execute('SELECT * FROM documents WHERE id=? AND emitter_id=? AND invoice_id=?',(invoice.get('documentId'),user['emitterId'],invoice['id'])).fetchone()
-                        if invoice.get('documentId') and not document:raise DomainError('No se encuentra el documento conservado. Recupéralo desde una copia completa antes de descargarlo.')
-                        if not document:
-                            # Legacy documents get a deterministic cache key without changing financial history.
-                            fingerprint=hashlib.sha256(json.dumps(invoice,sort_keys=True).encode()).hexdigest()
-                            key=str(UUID(hex=hashlib.sha256((user['emitterId']+ident+fingerprint).encode()).hexdigest()[:32]))
-                            document=c.execute('SELECT * FROM documents WHERE id=?',(key,)).fetchone()
-                            if not document:
-                                html=documents.render(invoice,state);c.execute('INSERT INTO documents VALUES(?,?,?,?,?,?,NULL)',(key,user['emitterId'],ident,invoice['number'],now(),html));document=c.execute('SELECT * FROM documents WHERE id=?',(key,)).fetchone()
+                        rows=c.execute('SELECT id,invoice_id,number,created_at FROM documents WHERE emitter_id=? AND invoice_id=? ORDER BY created_at DESC',(user['emitterId'],ident))
+                        return self.send_json({'documents':[documents.metadata(row) for row in rows]})
+                    else:document=issued_document(c,user,state,ident)
                     snapshot=dict(document)
                     return self.respond(lambda:self.download_document(snapshot))
+                if path.startswith('/api/invoices/') and path.endswith('/emails'):
+                    ident=unquote(path.split('/')[3]);access.require_own_invoice(state or {'invoices':[]},user,ident)
+                    return self.send_json({'emails':mailer.history(c,user,ident)})
                 if path in ['/api/backup','/api/backup.zip']:auth.require_admin(user)
                 if path in ['/api/backup.zip','/api/backup']:
                     if not state:raise DomainError('Todavía no hay datos guardados.')
@@ -558,12 +569,7 @@ class LocalHandler:
             data['_attachments']=[{**meta,'data':base64.b64encode((DATA/'attachments'/meta['id']).read_bytes()).decode()} for meta in files]
             body=json.dumps(data,ensure_ascii=False,indent=2).encode();self.send_response(200);self.send_header('Content-Type','application/json');self.send_header('Content-Disposition',f'attachment; filename="ADG-Finance-{now()[:10]}.json"');self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
     def download_document(self,document):
-        body=document['pdf']
-        if body is None:
-            body=documents.generate_pdf(document['html'])
-            with LOCK,connect() as c:
-                c.execute('UPDATE documents SET pdf=COALESCE(pdf,?) WHERE id=? AND emitter_id=?',(body,document['id'],document['emitter_id']))
-                body=c.execute('SELECT pdf FROM documents WHERE id=?',(document['id'],)).fetchone()['pdf']
+        body=document_pdf(document)
         name=re.sub(r'[^A-Za-z0-9._-]','_',document['number']) or 'Factura'
         self.send_response(200);self.send_header('Content-Type','application/pdf');self.send_header('Content-Disposition',f'attachment; filename="{name}.pdf"');self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
     def download_attachment(self,meta):
@@ -585,7 +591,10 @@ class LocalHandler:
             if path.startswith('/api/verifactu/'):
                 payload=json_object(self.read_body(250_000))
                 if path=='/api/verifactu/check':
-                    with connect() as c:return self.send_json(verifactu.connection_check(c,self.require_user(c),DATA))
+                    # Read what the check needs in a short transaction; the AEAT call runs without any database connection.
+                    with LOCK,connect() as c:
+                        user=self.require_user(c);auth.require_admin(user);settings=verifactu.config(c,user['emitterId'])
+                    return self.send_json(verifactu.connection_check(settings,user,DATA))
                 with LOCK,connect() as c:
                     c.execute('BEGIN IMMEDIATE');user=self.require_user(c)
                     if path=='/api/verifactu/config':result=verifactu.save_config(c,user,payload,DATA)
@@ -593,6 +602,33 @@ class LocalHandler:
                         _,state=current(c,user['emitterId']);result=verifactu.action(c,user,payload,state)
                     else:raise auth.AccessError('Ruta no encontrada.',404)
                 return self.send_json(result)
+            if path.startswith('/api/mail/') or (path.startswith('/api/invoices/') and path.endswith('/email')):
+                payload=json_object(self.read_body(50_000))
+                if path=='/api/mail/config':
+                    with LOCK,connect() as c:
+                        c.execute('BEGIN IMMEDIATE');user=self.require_user(c)
+                        return self.send_json(mailer.save_config(c,user,payload,DATA))
+                if path=='/api/mail/check':
+                    with LOCK,connect() as c:
+                        user=self.require_user(c);auth.require_admin(user);settings=mailer.config(c,user['emitterId'])
+                    if not settings:raise DomainError('Guarda primero la configuración del correo.')
+                    mailer.deliver(settings,None,DATA)
+                    return self.send_json({'ok':True})
+                if path.count('/')!=4:return self.send_json({'error':'Ruta no encontrada.'},404)
+                ident=unquote(path.split('/')[3])
+                # Validation and the document snapshot are read under the lock; PDF and SMTP run without it.
+                with LOCK,connect() as c:
+                    user=self.require_user(c);_,state=current(c,user['emitterId'])
+                    invoice=access.require_own_invoice(state or {'invoices':[]},user,ident)
+                    if invoice.get('isExample'):raise DomainError('Las facturas de ejemplo no se envían por correo.')
+                    if invoice.get('voided'):raise DomainError('Las facturas anuladas no se envían por correo.')
+                    mail=mailer.request(payload);settings=mailer.config(c,user['emitterId'])
+                    if not settings:raise DomainError('Un administrador debe configurar el correo de envío de este emisor.')
+                    document=dict(issued_document(c,user,state,ident));company=invoice.get('companySnapshot') or state['company']
+                mailer.deliver(settings,mailer.message(settings,company,document['number'],mail,document_pdf(document)),DATA)
+                with LOCK,connect() as c:
+                    user=self.require_user(c);entry=mailer.record(c,user,ident,document,mail)
+                return self.send_json({'email':entry})
             if path=='/api/text-history':
                 payload=json_object(self.read_body(6_000_000))
                 with LOCK,connect() as c:
@@ -729,6 +765,9 @@ class LocalHandler:
                             c.execute('INSERT OR IGNORE INTO attachments(id,name,mime,size,owner_id,emitter_id) VALUES(?,?,?,?,?,?)',(file['id'],file['name'],file['mime'],len(file['content']),user['id'],user['emitterId']))
                         desc='Restaurar copia de seguridad (copia previa conservada)'
                     else:candidate,desc=command(state,cmd)
+                    if typ=='delete_invoice' and any(i['id']==cmd['invoiceId'] and i.get('status')=='draft' for i in state['invoices']):
+                        # A stale tab must not bring a deleted draft back.
+                        c.execute('INSERT OR REPLACE INTO retired_drafts VALUES(?,?,?,?)',(user['emitterId'],cmd['invoiceId'],next(i for i in state['invoices'] if i['id']==cmd['invoiceId']).get('ownerId') or '',now()))
                     if typ=='restore':candidate=access.normalize_restore_owners(candidate,user,{row['id'] for row in c.execute('SELECT id FROM users WHERE is_root=1 OR id IN (SELECT user_id FROM memberships WHERE emitter_id=?)',(user['emitterId'],))})
                     else:candidate=access.stamp_changes(state,candidate,user)
                     if typ in ['issue_invoice','rename_invoice']:
@@ -745,13 +784,38 @@ class LocalHandler:
             try:backup_daily()
             except (OSError,sqlite3.Error):
                 traceback.print_exc();result['warnings']=['Los cambios están guardados, pero no se ha podido crear la copia automática. Un administrador debe descargar una copia y revisar el espacio disponible.']
-            result['state']=access.project_state(result['state'],user);self.send_json(result)
+            result['state']=access.project_state(result['state'],user,copy=False);self.send_json(result)
         except auth.AccessError as e:self.send_json({'error':str(e)},e.status)
         except (DomainError,ValueError,KeyError,TypeError) as e:self.send_json({'error':str(e)},400)
         except Exception:traceback.print_exc();self.send_json({'error':'No se han guardado los cambios. Conserva una copia y vuelve a intentarlo.'},500)
         finally:
             if not committed:
                 for target in created_files:target.unlink(missing_ok=True)
+
+def issued_document(c,user,state,ident):
+    """The preserved document of an issued invoice, the same one for downloads and e-mails."""
+    invoice=access.require_own_invoice(state or {'invoices':[]},user,ident)
+    if invoice['status']!='issued':raise DomainError('El documento conservado está disponible después de emitir.')
+    document=c.execute('SELECT * FROM documents WHERE id=? AND emitter_id=? AND invoice_id=?',(invoice.get('documentId'),user['emitterId'],invoice['id'])).fetchone()
+    if invoice.get('documentId') and not document:raise DomainError('No se encuentra el documento conservado. Recupéralo desde una copia completa antes de descargarlo.')
+    if not document:
+        # Legacy documents get a deterministic cache key without changing financial history.
+        fingerprint=hashlib.sha256(json.dumps(invoice,sort_keys=True).encode()).hexdigest()
+        key=str(UUID(hex=hashlib.sha256((user['emitterId']+ident+fingerprint).encode()).hexdigest()[:32]))
+        document=c.execute('SELECT * FROM documents WHERE id=?',(key,)).fetchone()
+        if not document:
+            html=documents.render(invoice,state);c.execute('INSERT INTO documents VALUES(?,?,?,?,?,?,NULL)',(key,user['emitterId'],ident,invoice['number'],now(),html));document=c.execute('SELECT * FROM documents WHERE id=?',(key,)).fetchone()
+    return document
+
+def document_pdf(document):
+    """Generated outside the lock on first use and kept with the document."""
+    body=document['pdf']
+    if body is None:
+        body=documents.generate_pdf(document['html'])
+        with LOCK,connect() as c:
+            c.execute('UPDATE documents SET pdf=COALESCE(pdf,?) WHERE id=? AND emitter_id=?',(body,document['id'],document['emitter_id']))
+            body=c.execute('SELECT pdf FROM documents WHERE id=?',(document['id'],)).fetchone()['pdf']
+    return body
 
 def application(environ,start_response):
     """WSGI entry point."""

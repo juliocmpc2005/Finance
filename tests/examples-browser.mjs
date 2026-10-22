@@ -55,7 +55,7 @@ try{
  await p.getByRole('button',{name:'Duplicar factura',exact:true}).click();assert.ok(await p.locator('#invoice-example').isChecked());
  await p.locator('#invoice-example').uncheck();await p.waitForFunction(()=>document.querySelector('#series').value.startsWith('ADG-'));
  await p.getByRole('button',{name:'Revisar factura',exact:true}).click();await p.getByRole('button',{name:'Emitir factura',exact:true}).click();await p.getByRole('link',{name:'Descargar PDF',exact:true}).waitFor();
- const normal=(await api('/api/state')).state.invoices.find(i=>i.id!==first.id&&!i.isDemo&&i.status==='issued');assert.equal(normal.number,'ADG-4º-2026-41');assert.equal(normal.isExample,false);
+ const normal=(await api('/api/state')).state.invoices.find(i=>i.id!==first.id&&!i.isDemo&&i.status==='issued');assert.equal(normal.number,'ADG-4T-2026-41');assert.equal(normal.isExample,false);
  await p.locator('[data-nav=analysis]').click();await p.getByRole('button',{name:'Todas',exact:true}).click();assert.equal(await p.locator('[data-finance-invoice]').count(),1);
  assert.equal(await p.locator(`[data-finance-invoice="${first.id}"]`).count(),0);
  for(const [id,number] of initialNumbers)assert.equal((await api('/api/state')).state.invoices.find(i=>i.id===id).number,number);

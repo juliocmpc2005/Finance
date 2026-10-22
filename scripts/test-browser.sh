@@ -19,3 +19,6 @@ node tests/verifactu-browser.mjs
 node tests/examples-browser.mjs
 node tests/retention-browser.mjs
 node tests/series-browser.mjs
+node tests/security-browser.mjs
+node tests/mail-browser.mjs
+node tests/removal-browser.mjs

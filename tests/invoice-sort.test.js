@@ -21,10 +21,10 @@ test('emission dates sort in both directions with stable ties', () => {
 });
 
 test('same-day invoices follow the emission direction', () => {
-  const sameDay = [{id: 'a', number: 'ADG-4º-2026-49', date: '2026-10-19'}, {id: 'b', number: 'ADG-4º-2026-50', date: '2026-10-19'}, {id: 'c', number: null, date: '2026-10-19'}];
+  const sameDay = [{id: 'a', number: 'ADG-4T-2026-49', date: '2026-10-19'}, {id: 'b', number: 'ADG-4T-2026-50', date: '2026-10-19'}, {id: 'c', number: null, date: '2026-10-19'}];
   const sorted = order => [...sameDay].sort((x,y) => compareInvoices(x,y,order)).map(i => i.number);
-  assert.deepEqual(sorted('new'), ['ADG-4º-2026-50', 'ADG-4º-2026-49', null]);
-  assert.deepEqual(sorted('old'), ['ADG-4º-2026-49', 'ADG-4º-2026-50', null]);
+  assert.deepEqual(sorted('new'), ['ADG-4T-2026-50', 'ADG-4T-2026-49', null]);
+  assert.deepEqual(sorted('old'), ['ADG-4T-2026-49', 'ADG-4T-2026-50', null]);
 });
 
 test('custom identifiers, years and padded numbers sort naturally', () => {
@@ -35,12 +35,16 @@ test('custom identifiers, years and padded numbers sort naturally', () => {
 });
 
 test('ADG se ordena por año y contador anual, incluso con facturas de otro trimestre o más de 99',()=>{
- const values=['ADG-1º-2027-01','ADG-1º-2026-100','ADG-4º-2026-02','ADG-2º-2026-10','ADG-R-1º-2026-01'];
- assert.deepEqual(values.map(number=>({number})).sort((a,b)=>compareInvoices(a,b,'number-asc')).map(i=>i.number),['ADG-4º-2026-02','ADG-2º-2026-10','ADG-1º-2026-100','ADG-1º-2027-01','ADG-R-1º-2026-01']);
+ const values=['ADG-1T-2027-01','ADG-1T-2026-100','ADG-4T-2026-02','ADG-2T-2026-10','ADG-R-1T-2026-01'];
+ assert.deepEqual(values.map(number=>({number})).sort((a,b)=>compareInvoices(a,b,'number-asc')).map(i=>i.number),['ADG-4T-2026-02','ADG-2T-2026-10','ADG-1T-2026-100','ADG-1T-2027-01','ADG-R-1T-2026-01']);
+});
+test('las series T y las antiguas con ordinal se ordenan juntas por contador anual',()=>{
+ const values=['ADG-1T-2027-01','ADG-2º-2026-100','ADG-1T-2026-101','ADG-4°-2026-99'];
+ assert.deepEqual(values.map(number=>({number})).sort((a,b)=>compareInvoices(a,b,'number-asc')).map(i=>i.number),['ADG-4°-2026-99','ADG-2º-2026-100','ADG-1T-2026-101','ADG-1T-2027-01']);
 });
 
 test('la ordenación ADG mantiene un orden estable al mezclar identificadores personalizados',()=>{
- const numbers=['ADG-2º-2026-10','ADG-1X','ADG-1º-2027-01','F-2026-001','ADG-4º-2026-02'];
- const expected=['ADG-4º-2026-02','ADG-2º-2026-10','ADG-1º-2027-01','ADG-1X','F-2026-001'];
+ const numbers=['ADG-2T-2026-10','ADG-1X','ADG-1T-2027-01','F-2026-001','ADG-4T-2026-02'];
+ const expected=['ADG-4T-2026-02','ADG-2T-2026-10','ADG-1T-2027-01','ADG-1X','F-2026-001'];
  for(const input of [numbers,[...numbers].reverse()])assert.deepEqual(input.map(number=>({number})).sort((a,b)=>compareInvoices(a,b,'number-asc')).map(i=>i.number),expected);
 });

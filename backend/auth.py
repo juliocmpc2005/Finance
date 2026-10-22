@@ -5,11 +5,16 @@ import re
 import secrets
 import time
 from http.cookies import SimpleCookie
+from threading import BoundedSemaphore
 from .finance import DomainError, now, uid
 
 COOKIE='adg_session'
 SESSION_SECONDS=12*60*60
 IDLE_SECONDS=2*60*60
+# Recording activity once a minute is enough for a two-hour idle limit and avoids a disk write per request.
+TOUCH_SECONDS=60
+# Each scrypt hash uses ~134 MB: bound the parallel work once it runs outside the database lock.
+HASH_SLOTS=BoundedSemaphore(2)
 
 class AccessError(Exception):
     def __init__(self,message='No tienes permiso para realizar esta operación.',status=403):
@@ -58,7 +63,7 @@ def check_password(value):
 
 def password_hash(value):
     check_password(value);salt=secrets.token_bytes(16)
-    digest=hashlib.scrypt(value.encode(),salt=salt,n=2**17,r=8,p=1,maxmem=256*1024*1024,dklen=32)
+    with HASH_SLOTS:digest=hashlib.scrypt(value.encode(),salt=salt,n=2**17,r=8,p=1,maxmem=256*1024*1024,dklen=32)
     return 'scrypt$131072$8$1$'+salt.hex()+'$'+digest.hex()
 
 
@@ -67,7 +72,7 @@ def password_matches(value,encoded):
     try:
         alg,n,r,p,salt,digest=encoded.split('$')
         if (alg,n,r,p)!=('scrypt','131072','8','1'):return False
-        actual=hashlib.scrypt(value.encode(),salt=bytes.fromhex(salt),n=int(n),r=int(r),p=int(p),maxmem=256*1024*1024,dklen=32)
+        with HASH_SLOTS:actual=hashlib.scrypt(value.encode(),salt=bytes.fromhex(salt),n=int(n),r=int(r),p=int(p),maxmem=256*1024*1024,dklen=32)
         return hmac.compare_digest(actual,bytes.fromhex(digest))
     except (ValueError,TypeError):return False
 
@@ -110,13 +115,13 @@ def cookie_token(headers):
 
 def session_user(c,headers,required=True):
     token=cookie_token(headers);stamp=time.time()
-    row=c.execute('''SELECT u.* FROM users u JOIN sessions s ON s.user_id=u.id
+    row=c.execute('''SELECT u.*,s.last_seen AS session_last_seen FROM users u JOIN sessions s ON s.user_id=u.id
         WHERE s.token_hash=? AND s.expires_at>? AND s.last_seen>? AND u.active=1''',
         (token_hash(token),stamp,stamp-IDLE_SECONDS)).fetchone() if token else None
     if not row:
         if required:raise AccessError('Inicia sesión para continuar.',401)
         return None
-    c.execute('UPDATE sessions SET last_seen=? WHERE token_hash=?',(stamp,token_hash(token)))
+    if stamp-row['session_last_seen']>=TOUCH_SECONDS:c.execute('UPDATE sessions SET last_seen=? WHERE token_hash=?',(stamp,token_hash(token)))
     return public_user(row)
 
 
@@ -124,22 +129,40 @@ def require_admin(user):
     if not user or user['role']!='admin':raise AccessError('Esta función está reservada a los administradores.')
 
 
-def login(c,data,address):
+def begin_login(c,data,address):
+    """Checks the limits and counts the attempt as failed until verify_login succeeds.
+
+    Counting first keeps the limits exact while the password is verified outside the database lock."""
     email=str(data.get('email','')).strip().casefold()[:254]
     keys=['email:'+email,'address:'+address];stamp=time.time()
     c.execute('DELETE FROM login_attempts WHERE started_at<?',(stamp-900,))
     for key in keys:
         row=c.execute('SELECT * FROM login_attempts WHERE key=?',(key,)).fetchone()
         if row and row['failures']>=(30 if key.startswith('address:') else 6):raise AccessError('Demasiados intentos. Espera 15 minutos antes de volver a intentarlo.',429)
+    for key in keys:
+        c.execute('INSERT INTO login_attempts VALUES(?,1,?) ON CONFLICT(key) DO UPDATE SET failures=failures+1',(key,stamp))
     row=c.execute('SELECT * FROM users WHERE email=?',(email,)).fetchone()
-    matches=password_matches(data.get('password'),row['password_hash'] if row else DUMMY_HASH)
-    if not matches or not row or not row['active']:
-        for key in keys:
-            c.execute('INSERT INTO login_attempts VALUES(?,1,?) ON CONFLICT(key) DO UPDATE SET failures=failures+1',(key,stamp))
-        return None
-    c.execute('DELETE FROM login_attempts WHERE key=?',('email:'+email,))
+    return {'keys':keys,'user':dict(row) if row else None}
+
+
+def verify_login(data,attempt):
+    user=attempt['user']
+    return password_matches(data.get('password'),user['password_hash'] if user else DUMMY_HASH)
+
+
+def finish_login(c,attempt,matches):
+    user=attempt['user']
+    if not matches or not user:return None
+    row=c.execute('SELECT * FROM users WHERE id=?',(user['id'],)).fetchone()
+    # The account may have been deactivated or its password changed during the verification.
+    if not row or not row['active'] or row['password_hash']!=user['password_hash']:return None
+    email_key,address_key=attempt['keys']
+    c.execute('DELETE FROM login_attempts WHERE key=?',(email_key,))
+    c.execute('UPDATE login_attempts SET failures=failures-1 WHERE key=?',(address_key,))
+    c.execute('DELETE FROM login_attempts WHERE key=? AND failures<=0',(address_key,))
     audit(c,row['id'],'Iniciar sesión')
     return public_user(row),new_session(c,row['id'])
+
 
 
 def change_password(c,user,data):

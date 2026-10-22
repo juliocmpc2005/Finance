@@ -62,6 +62,19 @@ class XmlTests(unittest.TestCase):
     def test_official_hash_vector(self):
         fields=[('IDEmisorFactura','89890001K'),('NumSerieFactura','12345678/G33'),('FechaExpedicionFactura','01-01-2024'),('TipoFactura','F1'),('CuotaTotal','12.35'),('ImporteTotal','123.45'),('Huella',''),('FechaHoraHusoGenRegistro','2024-01-01T19:20:30+01:00')]
         self.assertEqual(x.hash_fields(fields),'3C464DAF61ACB827C65FDA19F352A4E3BDC2C640E9E9FC4CC058073F38F12F60')
+    def test_invoice_number_rejects_aeat_forbidden_characters_before_generating_a_record(self):
+        identity={'name':'Productor QA','nif':'B12345674','installation':'QA'}
+        for number in ['ADG-4º-2026-01','ADG-4°-2026-01','A"1',"A'1",'A<1','A>1','A=1','A\n1','A\t1','A\x7f1','Aé1','A'*61,'   ']:
+            with self.subTest(number=number),self.assertRaisesRegex(DomainError,'ASCII'):
+                x.build({**invoice(),'number':number},identity,None,now())
+        inv={**invoice(),'number':'ADG-4T-2026-01'}
+        request,_=x.build(inv,identity,None,now())
+        self.assertEqual(x.text(x.parse(request),'NumSerieFactura'),inv['number'])
+        url,_=x.qr(inv);self.assertIn('numserie=ADG-4T-2026-01',url)
+        for code in range(32,127):
+            character=chr(code)
+            if character in '\"\'<>=':continue
+            self.assertEqual(x.validate_invoice_number('A'+character+'1'),'A'+character+'1')
     def test_schemas_hash_irpf_and_encoded_qr(self):
         inv=invoice();inv['number']='VF F & 2';identity={'name':'Productor QA','nif':'B12345674','installation':'QA'}
         request,digest=x.build(inv,identity,None,now());root=x.parse(request)
@@ -94,6 +107,53 @@ class XmlTests(unittest.TestCase):
         data=certificate();_,_,info=vf.certificate_info(data,'pass-test','B12345674');self.assertEqual(info['nif'],'B12345674')
         for data,password,nif in [(data,'wrong','B12345674'),(data,'pass-test','B87654321'),(certificate(expired=True),'pass-test','B12345674')]:
             with self.subTest(nif=nif,password=password),self.assertRaises(DomainError):vf.certificate_info(data,password,nif)
+
+    def test_public_only_pfx_is_not_reported_as_a_password_failure(self):
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.serialization import pkcs12
+        key,cert,_=pkcs12.load_key_and_certificates(certificate(),b'pass-test')
+        public_only=pkcs12.serialize_key_and_certificates(b'public-only',None,None,[cert],serialization.BestAvailableEncryption(b'correct-password'))
+        with self.assertRaisesRegex(DomainError,'se ha abierto correctamente, pero no contiene la clave privada'):
+            vf.certificate_info(public_only,'correct-password','B12345674')
+        key_only=pkcs12.serialize_key_and_certificates(b'key-only',key,None,None,serialization.BestAvailableEncryption(b'correct-password'))
+        with self.assertRaisesRegex(DomainError,'no su certificado asociado'):
+            vf.certificate_info(key_only,'correct-password','B12345674')
+
+    def test_renamed_public_exports_and_empty_files_have_specific_errors(self):
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.serialization import pkcs12,pkcs7
+        _,cert,_=pkcs12.load_key_and_certificates(certificate(),b'pass-test')
+        for encoding in [serialization.Encoding.DER,serialization.Encoding.PEM]:
+            for data,label in [(cert.public_bytes(encoding),'CER/CRT'),(pkcs7.serialize_certificates([cert],encoding),'P7B/PKCS#7')]:
+                with self.subTest(format=label,encoding=encoding),self.assertRaises(DomainError) as caught:
+                    vf.certificate_info(data,'correct-password','B12345674')
+                self.assertIn(label,str(caught.exception));self.assertIn('cambiar la extensión',str(caught.exception))
+        with self.assertRaisesRegex(DomainError,'archivo del certificado está vacío'):
+            vf.certificate_info(b'','correct-password','B12345674')
+
+    def test_windows_ciphers_and_unicode_password_are_supported_without_trimming(self):
+        from cryptography.hazmat.primitives import hashes,serialization
+        from cryptography.hazmat.primitives.serialization import pkcs12
+        key,cert,_=pkcs12.load_key_and_certificates(certificate(),b'pass-test')
+        password=' Contraseña-áñ-€-2026 '
+        for algorithm,mac in [(pkcs12.PBES.PBESv2SHA256AndAES256CBC,hashes.SHA256()),(pkcs12.PBES.PBESv1SHA1And3KeyTripleDESCBC,hashes.SHA1())]:
+            with self.subTest(cipher=algorithm):
+                encryption=serialization.PrivateFormat.PKCS12.encryption_builder().kdf_rounds(2000).key_cert_algorithm(algorithm).hmac_hash(mac).build(password.encode())
+                data=pkcs12.serialize_key_and_certificates(b'Windows-compatible',key,cert,None,encryption)
+                _,_,info=vf.certificate_info(data,password,'B12345674')
+                self.assertEqual(info['nif'],'B12345674')
+                with self.assertRaises(DomainError):vf.certificate_info(data,password.strip(),'B12345674')
+
+    def test_unknown_read_failures_do_not_claim_the_password_is_wrong(self):
+        from cryptography.exceptions import UnsupportedAlgorithm
+        for data in [b'not-a-pfx',certificate()]:
+            with self.subTest(data_length=len(data)),self.assertRaisesRegex(DomainError,'no permite distinguir') as caught:
+                vf.certificate_info(data,'synthetic-password-that-must-not-be-disclosed','B12345674')
+            self.assertNotIn('synthetic-password',str(caught.exception))
+        with patch.object(vf.pkcs12,'load_key_and_certificates',side_effect=UnsupportedAlgorithm('synthetic detail')):
+            with self.assertRaisesRegex(DomainError,'cifrado.*no es compatible') as caught:
+                vf.certificate_info(b'placeholder','synthetic-password','B12345674')
+            self.assertNotIn('synthetic detail',str(caught.exception))
 
 @unittest.skipUnless(x.E is not None and vf.Fernet is not None,'Install requirements.txt for fiscal tests')
 class WorkerTests(unittest.TestCase):
@@ -186,8 +246,8 @@ class FiscalApiTests(unittest.TestCase):
         status,result,_=self.root.request('/api/command',{'revision':self.state()['revision'],'command':{'type':'issue_invoice','invoiceId':ident,'operationId':uuid.uuid4().hex}},headers=self.headers)
         self.assertEqual(status,200,result);return next(i for i in result['state']['invoices'] if i['id']==ident)
     def test_checkbox_false_works_normally_true_locks_and_restore_cannot_erase_it(self):
-        normal=self.issue(False);self.assertRegex(normal['number'],r'^EQ-[1-4]º-20\d{2}-\d{2,}$');self.assertFalse(normal['presentationSnapshot']['showNumber']);self.assertNotIn('verifactu',normal)
-        before=self.state();inv=self.issue();self.assertRegex(inv['number'],r'^EQ-[1-4]º-20\d{2}-\d{2,}$');self.assertTrue(inv['presentationSnapshot']['showNumber']);self.assertTrue(inv['vfTest']);self.assertNotEqual(inv['number'],normal['number']);self.assertIn('qrDataUrl',inv['verifactu'])
+        normal=self.issue(False);self.assertRegex(normal['number'],r'^EQ-[1-4]T-20\d{2}-\d{2,}$');self.assertTrue(normal['presentationSnapshot']['showNumber']);self.assertNotIn('verifactu',normal)
+        before=self.state();inv=self.issue();self.assertRegex(inv['number'],r'^EQ-[1-4]T-20\d{2}-\d{2,}$');self.assertTrue(inv['presentationSnapshot']['showNumber']);self.assertTrue(inv['vfTest']);self.assertNotEqual(inv['number'],normal['number']);self.assertIn('qrDataUrl',inv['verifactu'])
         for typ,extra in [('rename_invoice',{'invoiceId':inv['id'],'number':'changed'}),('restore',{'state':before['state']})]:
             status,result,_=self.root.request('/api/command',{'revision':self.state()['revision'],'command':{'type':typ,**extra}},headers=self.headers);self.assertEqual(status,400,result)
         records=self.root.request('/api/verifactu/records',headers=self.headers)[1]['records'];self.assertEqual(len(records),1);self.assertEqual(records[0]['status'],'pending')
@@ -224,6 +284,25 @@ class FiscalApiTests(unittest.TestCase):
         self.assertEqual(self.root.request('/api/verifactu/config',{'environment':'production'},headers=self.headers)[0],400)
         self.assertEqual(self.root.request('/api/verifactu/config',{'endpoint':'http://localhost/'},headers=self.headers)[0],400)
         self.assertEqual(self.root.request('/api/verifactu/config',{'certificate':base64.b64encode(certificate('B87654321')).decode(),'password':'pass-test'},headers=self.headers)[0],400)
+    def test_failed_certificate_import_explains_cause_and_preserves_saved_configuration(self):
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.serialization import pkcs12,pkcs7
+        data=certificate(self.nif)
+        payload={'certificate':base64.b64encode(data).decode(),'password':'pass-test','autoSend':False}
+        self.assertEqual(self.root.request('/api/verifactu/config',payload,headers=self.headers)[0],200)
+        before=self.root.request('/api/verifactu/config',headers=self.headers)[1];financial_before=self.state()
+        def saved_certificate():
+            with closing(sqlite3.connect(Path(self.temp.name)/'finance.sqlite')) as c:
+                return c.execute('SELECT certificate FROM vf_settings WHERE emitter_id=?',(self.emitter,)).fetchone()[0]
+        encrypted_before=saved_certificate()
+        _,cert,_=pkcs12.load_key_and_certificates(data,b'pass-test')
+        public_only=pkcs12.serialize_key_and_certificates(b'public-only',None,None,[cert],serialization.BestAvailableEncryption(b'pass-test'))
+        for content,message in [(public_only,'no contiene la clave privada'),(pkcs7.serialize_certificates([cert],serialization.Encoding.DER),'P7B/PKCS#7'),(data,'no permite distinguir')]:
+            password='wrong-password' if content==data else 'pass-test'
+            status,result,_=self.root.request('/api/verifactu/config',{'certificate':base64.b64encode(content).decode(),'password':password,'producerName':'Must not be saved','producerNif':'B12345674'},headers=self.headers)
+            self.assertEqual(status,400,result);self.assertIn(message,result['error']);self.assertNotIn(password,result['error'])
+            self.assertEqual(self.root.request('/api/verifactu/config',headers=self.headers)[1],before)
+            self.assertEqual(saved_certificate(),encrypted_before);self.assertEqual(self.state(),financial_before)
     def test_other_issuer_cannot_read_fiscal_records_and_test_payments_cannot_mix(self):
         normal=self.issue(False);test=self.issue();record=test['verifactu']['recordId']
         self.assertEqual(self.root.request('/api/verifactu/records/'+record+'/xml')[0],404)

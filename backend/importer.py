@@ -96,29 +96,55 @@ def parse_xlsx(data,sheet=None,filename='Libro.xlsx'):
             key=(group_note,d,normalized(row['account'])) if ('fact' in note.lower() or 'confirming' in note.lower()) else ('single-'+str(row['row']),d,normalized(row['account']))
             proposals[key].append(row)
         payments=[]
-        for (_,d,_),members in proposals.items():
+        for (_,d,_),grouped in proposals.items():
+            # A receipt only pays its own client's invoices: the client with the largest share paid;
+            # invoices of other clients are left out and stay pending.
+            shares=defaultdict(int)
+            for m in grouped:shares[normalized(m['client'])]+=m['totalCents']
+            order=[normalized(m['client']) for m in grouped];payer=max(shares,key=lambda k:(shares[k],-order.index(k)))
+            members=[m for m in grouped if normalized(m['client'])==payer];others=[m for m in grouped if normalized(m['client'])!=payer]
             note=members[0]['paymentNote'];sum_total=sum(m['totalCents'] for m in members);claimed=None;issues=[]
             match=re.search(r'(?:transferencia(?:\s+de)?|cobrado)\s*([\d.]+(?:,\d{1,2})?)',note,re.I)
             if match:
                 try:claimed=cents(match[1].replace('.','').replace(',','.'))
                 except DomainError:pass
-            receipt=claimed if claimed is not None else sum_total
+            receipt=claimed if claimed is not None else sum(m['totalCents'] for m in grouped)
             if abs(receipt-sum_total)>2:issues.append('El ingreso no coincide con la suma de estas facturas. Revisa el reparto o deja saldo sin aplicar.')
             if 0<abs(receipt-sum_total)<=2:issues.append('Diferencia de hasta 0,02 €: se registrará un ajuste de redondeo.')
             if not valid_date(d) or d>today():issues.append('Revisa la fecha del ingreso.')
             if any(m['date']>d for m in members if valid_date(m['date'])):issues.append('Hay facturas posteriores al ingreso: la aplicación se fechará al emitir cada factura.')
             if 'confirming' in note.lower():issues.append('Confirming: revisa el neto recibido y los gastos; no se liquidarán automáticamente.')
             if not members[0]['account']:issues.append('Falta la cuenta receptora.')
+            if others:issues.append('Incluye facturas de otro cliente ('+', '.join(m['number']+' · '+m['client'] for m in others)+'): se dejan fuera y siguen pendientes. La diferencia quedará como saldo a favor de '+members[0]['client']+'.')
             payments.append({'id':uid(),'date':d,'amountCents':receipt,'payer':members[0]['client'],'account':members[0]['account'],'reference':note,'method':'confirming' if 'confirming' in note.lower() else 'transfer','rows':[m['row'] for m in members],'issues':issues,'selected':False})
         return {'id':uid(),'fileHash':sha256(data).hexdigest(),'filename':filename,'sheet':selected['name'],'sheets':[s['name'] for s in sheets],'rows':result,'payments':payments,'skippedRows':skipped,'createdAt':now()}
-    except (KeyError,ET.ParseError,IndexError,BadZipFile,RuntimeError) as e:raise DomainError('No se pudo leer la estructura del Excel.') from e
+    except DomainError:raise
+    except (KeyError,ET.ParseError,IndexError,BadZipFile,RuntimeError,ValueError,TypeError) as e:raise DomainError('No se pudo leer la estructura del Excel.') from e
     finally:z.close()
+
+ROW_TEXT=('number','date','client','description');ROW_CENTS=('baseCents','vatCents','totalCents')
+PAYMENT_TEXT=('date','payer','account','reference','method')
+
+def checked(item,texts,cents,message):
+    """Reviewed values come from the browser: wrong types are rejected before any use."""
+    if not isinstance(item,dict):raise DomainError(message)
+    for key in texts:
+        if key in item and not isinstance(item[key],str):raise DomainError(message)
+    for key in cents:
+        if key in item and type(item[key]) is not int:raise DomainError(message)
+    return item
+
+def row_number(value):
+    if type(value) is int:return value
+    if isinstance(value,str) and value.isdigit():return int(value)
+    raise DomainError('Hay una fila del Excel no válida en la revisión.')
 
 def import_commit(state,preview,decision):
     state=initialize(deepcopy(state));batch_id=uid();mapping={};count=0;skips=0
-    edits={int(r['row']):r for r in decision.get('rows',[])}
-    chosen_payments=decision.get('payments',[])
-    existing={number_key(n):i for i in state['invoices'] if i.get('status')=='issued' and not i.get('isDemo') for n in invoice_numbers(i)}
+    rows=decision.get('rows',[]);chosen_payments=decision.get('payments',[])
+    if not isinstance(rows,list) or not isinstance(chosen_payments,list):raise DomainError('La revisión de la importación no es válida.')
+    edits={row_number(checked(r,ROW_TEXT,ROW_CENTS,'Revisa los datos editados de la importación.').get('row')):r for r in rows}
+    existing={number_key(n):i for i in state['invoices'] if i.get('status')=='issued' and not i.get('isDemo') and not i.get('voided') for n in invoice_numbers(i)}
     source_rows={r['row']:r for r in preview['rows']}
     for row in preview['rows']:
         edit=edits.get(row['row'],{})
@@ -143,7 +169,8 @@ def import_commit(state,preview,decision):
     proposals={p['id']:p for p in preview['payments']}
     for chosen in chosen_payments:
         if not chosen.get('selected'):continue
-        p=proposals.get(chosen['id'])
+        checked(chosen,PAYMENT_TEXT,('amountCents',),'Revisa los datos editados de los cobros.')
+        p=proposals.get(chosen.get('id'))
         if not p:raise DomainError('Propuesta de cobro no reconocida.')
         if not chosen.get('reviewed'):raise DomainError('Confirma la revisión de cada transferencia que quieras incorporar.')
         receipt={**p,**{k:chosen[k] for k in ['date','amountCents','payer','account','reference','method'] if k in chosen}}
@@ -154,10 +181,20 @@ def import_commit(state,preview,decision):
         if not valid_date(receipt['date']) or receipt['date']>today():raise DomainError('Revisa la fecha del cobro antes de importar.')
         pay={'id':uid(),'amountCents':receipt['amountCents'],'date':receipt['date'],'payer':receipt['payer'],'account':receipt['account'],'reference':receipt['reference'],'method':receipt['method'],'notes':'Importado desde '+preview['filename'],'createdAt':now(),'importBatchId':batch_id,'importFingerprint':fingerprint}
         state['payments'].append(pay);items=[]
-        for a in chosen.get('allocations',[]):
-            row_no=int(a['row']);inv=mapping.get(row_no)
+        allocations=chosen.get('allocations',[])
+        if not isinstance(allocations,list):raise DomainError('El reparto del cobro no es válido.')
+        for a in allocations:
+            checked(a,(),('amountCents',),'El reparto del cobro no es válido.')
+            row_no=row_number(a.get('row'));inv=mapping.get(row_no)
             if not inv:raise DomainError(f'La fila {row_no} debe estar seleccionada para aplicar su cobro.')
             if a.get('amountCents',0)>0:items.append({'invoiceId':inv['id'],'amountCents':a['amountCents']})
-        add_allocations(state,pay,items,rounding=True);payment_count+=1
+        add_allocations(state,pay,items,rounding=True)
+        if not pay.get('clientId'):
+            # Without applications, the receipt is an advance of the client named as payer.
+            client=next((c for c in state['clients'] if normalized(c['name'])==normalized(pay['payer'])),None)
+            if not client:raise DomainError(f'El cobro de {pay["payer"]} no tiene facturas aplicadas: selecciona alguna de sus facturas o regístralo como anticipo desde Análisis.')
+            pay['clientId']=client['id']
+        # The payer is the client itself.
+        pay['payer']=next((c['name'] for c in state['clients'] if c['id']==pay['clientId']),pay['payer']);payment_count+=1
     state['importBatches'].append({'id':batch_id,'filename':preview['filename'],'sheet':preview['sheet'],'fileHash':preview['fileHash'],'date':today(),'createdAt':now(),'invoicesAdded':count,'invoicesMatched':skips,'paymentsAdded':payment_count})
     return validate_state(state),f'Importar {count} facturas y {payment_count} cobros; {skips} facturas ya existentes'

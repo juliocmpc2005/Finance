@@ -8,7 +8,7 @@ TEXT_LIMIT = 50
 DEFAULT = 'adg-original'
 EDIT_FIELDS = ('clientId', 'date', 'description', 'lines', 'notes', 'reason',
                'originalId', 'templateId', 'withholdingRate', 'isExample',
-               'vfEnabled', 'vfExemption', 'series')
+               'vfEnabled', 'vfExemption', 'series', 'globalPrice', 'globalTax')
 
 
 def initialize_schema(c):
@@ -157,7 +157,7 @@ def after_changes(c, changes, save, actor=None, restore=False):
                 retired = c.execute('SELECT 1 FROM retired_drafts WHERE emitter_id=? AND invoice_id=?',
                                     (emitter, ident)).fetchone()
                 if retired and not restore:
-                    raise DomainError('Este borrador se eliminó por el límite de 15. Recarga la página; '
+                    raise DomainError('Este borrador se eliminó (a mano o por el límite de 15). Recarga la página; '
                                       'puedes consultar tus textos recientes para reutilizarlos.')
                 if restore:
                     c.execute('DELETE FROM retired_drafts WHERE emitter_id=? AND invoice_id=?', (emitter, ident))
