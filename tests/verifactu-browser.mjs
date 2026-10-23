@@ -8,14 +8,14 @@ import {authenticateTest} from './auth-helper.mjs';
 
 const directory=await mkdtemp(join(tmpdir(),'adg-verifactu-ui-')),port=4187,base=`http://localhost:${port}`;
 const python=process.env.VF_PYTHON||'.venv/bin/python';
-const server=spawn(python,['serve.py'],{env:{...process.env,ADG_DATA_DIR:directory,ADG_PORT:String(port)},stdio:['ignore','ignore','pipe']});let browser,serverErrors='';server.stderr.on('data',data=>serverErrors+=data);
+const server=spawn(python,['serve.py'],{env:{...process.env,ADG_DATA_DIR:directory,ADG_PORT:String(port),ADG_VERIFACTU_NETWORK:'off'},stdio:['ignore','ignore','pipe']});let browser,serverErrors='';server.stderr.on('data',data=>serverErrors+=data);
 try{
  for(let n=0;n<100;n++){try{if((await fetch(base+'/api/auth/session')).ok)break;}catch{}await new Promise(resolve=>setTimeout(resolve,50));}
  const qa=await authenticateTest(base);browser=await chromium.launch({headless:true,executablePath:process.env.CHROME_PATH||'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'});
  const p=await browser.newPage({viewport:{width:1440,height:1100}});await qa.page(p);p.setDefaultTimeout(15000);const errors=[];p.on('pageerror',error=>errors.push(error.message));
  const state=()=>p.evaluate(()=>fetch('/api/state').then(r=>r.json()));
  await p.goto(base);await p.getByRole('heading',{name:'Tus facturas',exact:true}).waitFor();const before=await state();
- await p.locator('[data-nav=verifactu]').click();await p.locator('#vf-producer-name').fill('Productor sintético de pruebas');await p.locator('#vf-producer-nif').fill('B12345674');assert.ok(!(await p.locator('#vf-auto-send').isChecked()));await p.getByRole('button',{name:'Guardar configuración de pruebas',exact:true}).click();await p.waitForFunction(()=>document.querySelector('#toast').textContent.includes('guardada'));assert.equal((await state()).revision,before.revision);
+ await p.locator('[data-nav=verifactu]').click();await p.locator('.vf-producer #vf-producer-name').fill('Productor sintético de pruebas');await p.locator('.vf-producer #vf-producer-nif').fill('B12345674');assert.ok(!(await p.locator('#vf-auto-send').isChecked()));assert.equal(await p.locator('#vf-config-form #vf-producer-name').count(),0);await p.getByRole('button',{name:'Guardar datos del productor',exact:true}).click();await p.waitForFunction(()=>document.querySelector('#toast').textContent.includes('Datos del productor guardados'));assert.equal((await state()).revision,before.revision);
  await p.locator('[data-nav=invoices]').click();await p.getByRole('button',{name:'Nueva factura',exact:true}).click();await p.locator('#invoice-verifactu').waitFor();assert.ok(!(await p.locator('#invoice-verifactu').isChecked()));
  await p.locator('#client').selectOption('c1');await p.getByLabel('Concepto 1',{exact:true}).fill('Honorarios de prueba con huella y QR');await p.getByLabel('Precio 1',{exact:true}).fill('100');await p.locator('#withholding-rate').fill('15');await p.locator('#invoice-verifactu').check();await p.locator('#vf-exemption').waitFor();assert.ok(await p.locator('#date').isEditable());
  await p.getByRole('button',{name:'Revisar factura',exact:true}).click();assert.equal(await p.locator('.adg-document-heading h2').innerText(),'Borrador');

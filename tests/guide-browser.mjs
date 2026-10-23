@@ -34,7 +34,19 @@ try{
  // Administrator: the help button opens the index with every chapter, including administration.
  const admin=await page({width:1280,height:900});
  await admin.getByRole('button',{name:'Ayuda',exact:true}).click();await admin.getByRole('heading',{name:'Guía de uso'}).waitFor();
- assert.equal(await admin.locator('.guide-card').count(),18);await admin.getByRole('heading',{name:'Administración'}).waitFor();
+ assert.equal(await admin.locator('.guide-card').count(),20);await admin.getByRole('heading',{name:'Administración'}).waitFor();
+ // The video chapter plays the MP4 (byte ranges, as Safari and iOS require) and offers the file and its subtitles.
+ await admin.locator('.guide-card[data-guide="video-primera-factura"]').click();await admin.getByRole('heading',{name:'Vídeo: de cliente nuevo a factura enviada'}).waitFor();
+ await admin.waitForFunction(()=>document.querySelector('.guide-video video')?.readyState>=1);assert.ok(await admin.locator('.guide-video video').evaluate(v=>v.duration)>45);
+ const part=await admin.request.get(base+'/assets/guide/video-primera-factura.mp4',{headers:{Range:'bytes=0-1023'}});assert.equal(part.status(),206);assert.equal((await part.body()).length,1024);
+ assert.equal((await admin.request.get(base+'/assets/guide/video-primera-factura.srt')).status(),200);assert.equal(await admin.locator('.guide-downloads a').count(),2);
+ await admin.locator('.guide-back').click();await admin.locator('.guide-card').first().waitFor();
+ // Análisis: its video above the steps, with downloads named after the chapter.
+ await admin.locator('.guide-card[data-guide="analisis"]').click();await admin.getByRole('heading',{name:'Análisis: lo que te deben'}).waitFor();
+ await admin.waitForFunction(()=>document.querySelector('.guide-video video')?.readyState>=1);assert.ok(await admin.locator('.guide-video video').evaluate(v=>v.duration)>45);
+ assert.equal(await admin.locator('.guide-steps li').count(),4);assert.equal(await admin.locator('.guide-downloads a').first().getAttribute('download'),'Análisis - arquitecturadeguardia Finance.mp4');
+ assert.equal((await admin.request.get(base+'/assets/guide/video-analisis.mp4',{headers:{Range:'bytes=0-99'}})).status(),206);
+ await admin.locator('.guide-back').click();await admin.locator('.guide-card').first().waitFor();
  await admin.locator('[data-guide="crear-factura"]').first().click();await admin.getByRole('heading',{name:'Crear una factura'}).waitFor();
  const image=admin.locator('.guide-figure img');await image.scrollIntoViewIfNeeded();await admin.waitForFunction(()=>document.querySelector('.guide-figure img')?.naturalWidth>0);
  assert.match(await image.evaluate(i=>i.currentSrc),/assets\/guide\/editor\.jpg$/);
@@ -48,7 +60,7 @@ try{
  // Normal user, on a phone: no administration chapters, mobile captures, no horizontal scroll.
  const phone=await page({width:390,height:844},memberCookie);
  await phone.getByRole('button',{name:'Ayuda',exact:true}).click();await phone.locator('.guide-card').first().waitFor();
- assert.equal(await phone.locator('.guide-card').count(),11);assert.equal(await phone.getByRole('heading',{name:'Administración'}).count(),0);
+ assert.equal(await phone.locator('.guide-card').count(),12);assert.equal(await phone.getByRole('heading',{name:'Administración'}).count(),0);
  assert.ok(await phone.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'El índice no debe desbordar en móvil');
  await phone.locator('[data-guide="errores"]').first().click();await phone.getByRole('heading',{name:'Me he equivocado, ¿qué hago?'}).waitFor();
  await phone.locator('.guide-figure img').scrollIntoViewIfNeeded();await phone.waitForFunction(()=>document.querySelector('.guide-figure img')?.naturalWidth>0);
@@ -57,5 +69,5 @@ try{
  await phone.screenshot({path:join(process.env.GUIDE_SCREENSHOTS||temp,'guide-phone.png'),fullPage:true});
  await admin.screenshot({path:join(process.env.GUIDE_SCREENSHOTS||temp,'guide-index.png'),fullPage:true});
  assert.deepEqual(errors,[]);
- console.log('PASS: guía desde Ayuda y el menú, 18 capítulos para administración y 11 para usuarios, capturas de escritorio y móvil, navegación entre capítulos y móvil sin desbordamiento.');
+ console.log('PASS: guía desde Ayuda y el menú, 20 capítulos para administración y 12 para usuarios, vídeo con subtítulos, capturas de escritorio y móvil, navegación entre capítulos y móvil sin desbordamiento.');
 }finally{await browser?.close();server.kill();}

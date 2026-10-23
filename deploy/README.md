@@ -51,6 +51,6 @@ Referencias de configuración: [proxy inverso de Caddy](https://caddyserver.com/
 
 ## Adaptador experimental VERI*FACTU
 
-Las dependencias se instalan con el mismo entorno del servidor (`sh scripts/setup-server.sh`; `scripts/setup-verifactu.sh` se mantiene como alias). Conservar el directorio `backend/verifactu_specs/` con los esquemas fijados. El adaptador continúa limitado a preproducción aunque se configure un dominio HTTPS.
+Las dependencias se instalan con el mismo entorno del servidor (`sh scripts/setup-server.sh`; `scripts/setup-verifactu.sh` se mantiene como alias). Conservar el directorio `backend/verifactu_specs/` con los esquemas fijados. El envío al servicio real de la AEAT solo se produce en los emisores donde un administrador active «VERI*FACTU real» en Configuración; configurar un dominio HTTPS no lo activa. Para probar una instalación sin contactar con la AEAT, arrancar con `ADG_VERIFACTU_NETWORK=off`.
 
 La recuperación completa requiere también `ADG_DATA_DIR/vf-secrets/master.key`, además de SQLite y justificantes. Esa clave permite abrir los certificados cifrados: debe formar parte de la copia externa cifrada y restringida del directorio de datos; no se incluye en el ZIP financiero por emisor. Ver [alcance y pruebas](../reviews/2026-10-19-verifactu-experimental.md).

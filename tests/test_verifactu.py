@@ -190,6 +190,47 @@ class WorkerTests(unittest.TestCase):
         with patch.object(vf,'tls_context',return_value=None):return vf.deliver_once(self.connect,self.lock,self.data,send)
     def job(self):
         with self.connect() as c:return dict(c.execute('SELECT * FROM vf_jobs LIMIT 1').fetchone())
+    def real(self,number):
+        inv={**invoice(),'id':str(uuid.uuid4()),'number':number}
+        with self.connect() as c:
+            prepared=vf.prepare(c,inv,{'invoices':[inv]},self.user,environment='production');vf.finalize(c,prepared,inv)
+        return inv,prepared
+    def test_each_environment_keeps_its_own_chain_qr_and_destination(self):
+        with self.connect() as c:test=dict(c.execute('SELECT hash FROM vf_records').fetchone())
+        first,prepared=self.real('VF-F-2026-010');self.assertEqual(prepared['previous_hash'],'');self.assertEqual(x.text(x.parse(prepared['request_xml']),'PrimerRegistro'),'S')
+        self.assertTrue(first['verifactu']['qrUrl'].startswith('https://www2.agenciatributaria.gob.es/wlpl/TIKE-CONT/ValidarQR?'));self.assertEqual(first['verifactu']['environment'],'production')
+        self.assertTrue(self.inv['verifactu']['qrUrl'].startswith('https://prewww2.aeat.es/wlpl/TIKE-CONT/ValidarQR?'))
+        _,second=self.real('VF-F-2026-011');self.assertEqual(second['previous_hash'],prepared['hash'])
+        later=self.add({**invoice(),'id':str(uuid.uuid4()),'number':'VF-F-2026-012'});self.assertEqual(later['previous_hash'],test['hash'])
+        with self.connect() as c:self.assertEqual([r[0] for r in c.execute('SELECT environment FROM vf_records ORDER BY seq')],['preproduction','production','production','preproduction'])
+    def test_real_records_are_sent_with_test_sending_paused_and_only_to_the_real_host(self):
+        inv,prepared=self.real('VF-F-2026-020');calls=[]
+        with self.connect() as c:c.execute('UPDATE vf_settings SET auto_send=0')
+        with patch.object(vf,'tls_context',return_value=None),patch.object(vf,'transport',side_effect=lambda body,context,environment:(calls.append(environment),reply(inv))[1]):
+            self.assertTrue(vf.deliver_once(self.connect,self.lock,self.data));self.assertFalse(vf.deliver_once(self.connect,self.lock,self.data))
+        self.assertEqual(calls,['production'])
+        with self.connect() as c:
+            self.assertEqual(c.execute('SELECT status FROM vf_jobs WHERE record_id=?',(prepared['id'],)).fetchone()[0],'accepted')
+            settings=dict(c.execute('SELECT next_send,next_send_production FROM vf_settings').fetchone());self.assertEqual(settings['next_send'],0);self.assertGreater(settings['next_send_production'],0)
+    def test_transport_uses_fixed_hosts_and_never_connects_with_the_network_switch_off(self):
+        opened=[]
+        class Connection:
+            def __init__(self,host,port,context=None,timeout=None):opened.append([host])
+            def request(self,method,path,body=None,headers=None):opened[-1].append(path)
+            def getresponse(self):return type('Response',(),{'status':200,'read':lambda self,n:b'<ok/>'})()
+            def close(self):pass
+        with patch.dict(os.environ,{'ADG_VERIFACTU_NETWORK':'on'}),patch.object(vf.http.client,'HTTPSConnection',Connection):
+            vf.transport(b'<x/>',None,'production');vf.transport(b'<x/>',None,'preproduction')
+            with self.assertRaises(KeyError):vf.transport(b'<x/>',None,'https://example.test')
+        self.assertEqual(opened,[['www1.agenciatributaria.gob.es','/wlpl/TIKE-CONT/ws/SistemaFacturacion/VerifactuSOAP'],['prewww1.aeat.es','/wlpl/TIKE-CONT/ws/SistemaFacturacion/VerifactuSOAP']])
+        with patch.dict(os.environ,{'ADG_VERIFACTU_NETWORK':'off'}),patch.object(vf.http.client,'HTTPSConnection',side_effect=AssertionError('no debe conectar')):
+            with self.assertRaisesRegex(OSError,'desactivada'):vf.transport(b'<x/>',None,'production')
+    def test_activation_needs_the_declaration_saved_by_the_main_account(self):
+        user={**self.user,'emitter':{'id':'e','nif':'B12345674','name':'Emisor QA','active':True},'name':'Admin'}
+        with self.connect() as c:
+            with self.assertRaisesRegex(DomainError,'declaración'):vf.set_production(c,user,{'active':True,'confirmDeclaration':True,'confirmAllInvoices':True})
+            with self.assertRaises(vf.auth.AccessError):vf.save_declaration(c,user,{'file':base64.b64encode(b'%PDF-1.4').decode()})
+            self.assertFalse(vf.production_active(c,'e'))
     def test_accepted_and_rejected_keep_original_immutable(self):
         self.assertTrue(self.delivery(lambda request,context:reply(self.inv)))
         self.assertEqual(self.job()['status'],'accepted')
@@ -232,7 +273,7 @@ class FiscalApiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.temp=tempfile.TemporaryDirectory();sock=socket.socket();sock.bind(('127.0.0.1',0));port=sock.getsockname()[1];sock.close();cls.url=f'http://127.0.0.1:{port}'
-        cls.process=subprocess.Popen([__import__('sys').executable,'serve.py'],cwd=Path(__file__).resolve().parents[1],env={**os.environ,'ADG_DATA_DIR':cls.temp.name,'ADG_PORT':str(port)},stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        cls.process=subprocess.Popen([__import__('sys').executable,'serve.py'],cwd=Path(__file__).resolve().parents[1],env={**os.environ,'ADG_DATA_DIR':cls.temp.name,'ADG_PORT':str(port),'ADG_VERIFACTU_NETWORK':'off'},stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         for _ in range(100):
             try:__import__('urllib.request',fromlist=['urlopen']).urlopen(cls.url+'/api/auth/session');break
             except Exception:time.sleep(.05)
@@ -307,6 +348,43 @@ class FiscalApiTests(unittest.TestCase):
             status,result,_=self.root.request('/api/verifactu/action',{'action':action,'recordId':ident,'details':details},headers=self.headers);self.assertEqual(status,400);self.assertIn('número',result['error'])
         status,result,_=self.root.request('/api/verifactu/action',{'action':'discard','recordId':ident},headers=self.headers);self.assertEqual(status,200,result)
         self.assertEqual(self.records()[ident]['status'],'discarded');self.assertEqual(self.root.request('/api/verifactu/action',{'action':'discard','recordId':ident},headers=self.headers)[0],400)
+    def make_real(self):
+        self.assertEqual(self.root.request('/api/verifactu/declaration',{'file':base64.b64encode(b'%PDF-1.4 declaracion de pruebas').decode(),'name':'declaracion.pdf'},headers=self.headers)[0],200)
+        self.assertEqual(self.root.request('/api/verifactu/config',{'certificate':base64.b64encode(certificate(self.nif)).decode(),'password':'pass-test','autoSend':False},headers=self.headers)[0],200)
+        status,result,_=self.root.request('/api/verifactu/production',{'active':True,'confirmDeclaration':True,'confirmAllInvoices':True},headers=self.headers);self.assertEqual(status,200,result);return result
+    def test_real_mode_requires_declaration_certificate_and_both_confirmations(self):
+        activate=lambda **extra:self.root.request('/api/verifactu/production',{'active':True,'confirmDeclaration':True,'confirmAllInvoices':True,**extra},headers=self.headers)
+        # The declaration belongs to the installation (shared by the tests); the certificate is per issuer.
+        status,result,_=activate();self.assertEqual(status,400);self.assertRegex(result['error'],'declaración|certificado')
+        self.assertEqual(self.root.request('/api/verifactu/declaration',{'file':base64.b64encode(b'no es un pdf').decode()},headers=self.headers)[0],400)
+        self.assertEqual(self.root.request('/api/verifactu/declaration',{'file':base64.b64encode(b'%PDF-1.4 declaracion').decode(),'name':'declaracion.pdf'},headers=self.headers)[0],200)
+        status,body,_=self.root.request('/api/verifactu/declaration',headers=self.headers);self.assertEqual(status,200);self.assertTrue(body.startswith(b'%PDF-'))
+        status,result,_=activate();self.assertEqual(status,400);self.assertIn('certificado',result['error'])
+        self.assertEqual(self.root.request('/api/verifactu/config',{'certificate':base64.b64encode(certificate(self.nif)).decode(),'password':'pass-test','autoSend':False},headers=self.headers)[0],200)
+        status,result,_=activate(confirmAllInvoices=False);self.assertEqual(status,400);self.assertIn('Confirma',result['error'])
+        status,result,_=activate();self.assertEqual(status,200,result);self.assertTrue(result['production']['active']);self.assertEqual(result['system']['version'],x.SYSTEM['version'])
+        self.assertFalse(self.root.request('/api/verifactu/config',headers=self.headers)[1]['autoSend'])
+    def test_real_issuer_sends_real_invoices_in_their_own_chain_and_test_ones_in_series_pruebas(self):
+        before=self.issue();self.make_real()
+        real=self.issue(False);self.assertEqual(real['verifactu']['environment'],'production');self.assertNotIn('vfTest',real)
+        self.assertRegex(real['number'],r'^[A-Z]+-[1-4]T-20\d{2}-\d{2,}$');self.assertTrue(real['verifactu']['qrUrl'].startswith('https://www2.agenciatributaria.gob.es/'))
+        test=self.issue();self.assertRegex(test['number'],r'^PRUEBAS-20\d{2}-01$');self.assertTrue(test['vfTest']);self.assertEqual(test['verifactu']['environment'],'preproduction')
+        second=self.issue(False)
+        records={r['invoice_id']:r for r in self.root.request('/api/verifactu/records',headers=self.headers)[1]['records']}
+        self.assertEqual((records[real['id']]['environment'],records[real['id']]['previous_hash']),('production',''))
+        self.assertEqual(records[second['id']]['previous_hash'],records[real['id']]['hash']);self.assertEqual(records[test['id']]['previous_hash'],records[before['id']]['hash'])
+        self.assertEqual(x.text(x.parse(self.root.request('/api/verifactu/records/'+records[real['id']]['id']+'/xml',headers=self.headers)[1]),'PrimerRegistro'),'S')
+        snapshot=self.state();snapshot['state']['invoices'].append({'id':'example','date':today(),'clientId':'client','status':'draft','number':None,'isExample':True,'lines':[{'description':'Muestra','qty':1,'price':100,'tax':21}]})
+        self.assertEqual(self.root.request('/api/state',snapshot,headers=self.headers)[0],200)
+        status,result,_=self.root.request('/api/command',{'revision':self.state()['revision'],'command':{'type':'issue_invoice','invoiceId':'example'}},headers=self.headers);self.assertEqual(status,200,result)
+        self.assertNotIn('verifactu',next(i for i in result['state']['invoices'] if i['id']=='example'))
+        from backend.finance import balances
+        self.assertIn(real['id'],{b['invoice']['id'] for b in balances(self.state()['state']).values()})
+        for command in [{'type':'rename_invoice','invoiceId':real['id'],'number':'OTRO-1'},{'type':'void_invoice','invoiceId':real['id']}]:
+            self.assertEqual(self.root.request('/api/command',{'revision':self.state()['revision'],'command':command},headers=self.headers)[0],400,command)
+        status,result,_=self.root.request('/api/verifactu/production',{'active':False},headers=self.headers);self.assertEqual(status,400);self.assertIn('año natural',result['error'])
+        diagnosis=vf.diagnose({'kind':'alta','status':'rejected','error':'El campo NumSerieFactura no es válido','code':'','environment':'production'},{**invoice(),'number':'MAL-4º-2026-01'})
+        self.assertFalse(diagnosis['canDiscard']);self.assertIn('gestoría',diagnosis['hint'])
     def test_member_sees_only_own_records_and_cannot_configure_certificate(self):
         foreign=self.issue();email=uuid.uuid4().hex+'@example.test'
         status,data,_=self.root.request('/api/users',{'name':'Miembro QA','email':email,'password':PASSWORD,'role':'member','memberships':[{'emitterId':self.emitter,'role':'member'}]});self.assertEqual(status,201,data)

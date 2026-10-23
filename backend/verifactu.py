@@ -1,9 +1,11 @@
-"""Experimental direct AEAT adapter. No production URL or production mode exists.
+"""Direct AEAT VERI*FACTU adapter: the test service (preproduction, experimental) and, per issuer, the real one.
 
-Fiscal records are append-only. Mutable delivery state lives in separate tables.
-Network operations run outside the financial database lock, with durable leases.
+Fiscal records are append-only and each environment keeps its own hash chain. Mutable delivery state lives
+in separate tables. Network operations run outside the financial database lock, with durable leases.
+ADG_VERIFACTU_NETWORK=off forbids any connection to AEAT (automatic tests).
 """
 import base64, hashlib, http.client, json, os, re, secrets, ssl, tempfile, time
+from urllib.parse import urlparse
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
@@ -47,18 +49,68 @@ def initialize_schema(c):
     CREATE TRIGGER IF NOT EXISTS vf_attempt_no_delete BEFORE DELETE ON vf_attempts BEGIN SELECT RAISE(ABORT,'Fiscal attempts are immutable'); END;
     ''')
     c.execute("INSERT OR IGNORE INTO vf_identity(id,installation) VALUES(1,?)",(uid(),))
+    # Existing records were all sent to the test service: the default keeps them in its chain.
+    for table,column,definition in [('vf_records','environment',"TEXT NOT NULL DEFAULT 'preproduction'"),
+            ('vf_settings','production_since','TEXT'),('vf_settings','production_by','TEXT'),('vf_settings','next_send_production','REAL NOT NULL DEFAULT 0'),
+            ('vf_identity','declaration','BLOB'),('vf_identity','declaration_name',"TEXT NOT NULL DEFAULT ''"),('vf_identity','declaration_at',"TEXT NOT NULL DEFAULT ''")]:
+        if column not in {row[1] for row in c.execute('PRAGMA table_info('+table+')')}:c.execute('ALTER TABLE '+table+' ADD COLUMN '+column+' '+definition)
 
 def config(c,emitter_id):
     row=c.execute('SELECT * FROM vf_settings WHERE emitter_id=?',(emitter_id,)).fetchone()
-    return dict(row) if row else {'auto_send':0,'certificate':None,'certificate_info':'{}','next_send':0}
+    return dict(row) if row else {'auto_send':0,'certificate':None,'certificate_info':'{}','next_send':0,'production_since':None,'production_by':None,'next_send_production':0}
+
+def production_active(c,emitter_id):return bool(config(c,emitter_id).get('production_since'))
+LABELS={'preproduction':'de pruebas','production':'real'}
 
 def public_config(c,user):
     settings=config(c,user['emitterId']);identity=dict(c.execute('SELECT * FROM vf_identity WHERE id=1').fetchone())
     info=json.loads(settings['certificate_info'])
     if user['role']!='admin':info={key:info[key] for key in ['expires'] if key in info}
     ready=bool(identity['name'] and identity['nif'] and settings['certificate'])
+    production={'active':bool(settings.get('production_since')),'since':settings.get('production_since') or '',
+        'declaration':{'name':identity.get('declaration_name',''),'at':identity.get('declaration_at','')} if identity.get('declaration') else None,
+        'canDeactivate':not production_this_year(c,user['emitterId'])}
+    identity={key:identity[key] for key in ['installation','name','nif']}
     return {'environment':'preproduction','endpoint':xml.ENDPOINT,'autoSend':bool(settings['auto_send']),
-            'certificate':info,'identity':identity,'ready':ready,'dependencies':xml.E is not None and Fernet is not None}
+            'certificate':info,'identity':identity,'ready':ready,'dependencies':xml.E is not None and Fernet is not None,
+            'production':production,'system':xml.SYSTEM}
+
+def production_this_year(c,emitter_id):
+    return bool(c.execute("SELECT 1 FROM vf_records WHERE emitter_id=? AND environment='production' AND substr(created_at,1,4)=? LIMIT 1",(emitter_id,now()[:4])).fetchone())
+
+def save_declaration(c,user,data):
+    """The producer's declaración responsable, shared by the whole installation and readable by every user."""
+    if not user.get('isRoot'): raise auth.AccessError('La cuenta principal guarda la declaración responsable del productor.')
+    try: content=base64.b64decode(data.get('file',''),validate=True)
+    except (ValueError,TypeError): raise DomainError('El archivo de la declaración no es válido.')
+    name=str(data.get('name') or 'declaracion-responsable.pdf').strip()[:120]
+    if not content.startswith(b'%PDF-') or len(content)>10_000_000: raise DomainError('La declaración responsable debe ser un PDF de hasta 10 MB.')
+    c.execute('UPDATE vf_identity SET declaration=?,declaration_name=?,declaration_at=? WHERE id=1',(content,name,now()))
+    auth.audit(c,user['id'],'Guardar declaración responsable de VERI*FACTU: '+name)
+    return public_config(c,user)
+
+def set_production(c,user,data):
+    """Per issuer: once active, every invoice it issues (except examples and test invoices) goes to the real AEAT service."""
+    auth.require_admin(user);settings=config(c,user['emitterId'])
+    if type(data.get('active')) is not bool: raise DomainError('Indica si se activa VERI*FACTU real.')
+    if not data['active']:
+        if not settings.get('production_since'): return public_config(c,user)
+        if production_this_year(c,user['emitterId']): raise DomainError('Este emisor ya ha remitido facturas a la AEAT real este año. La modalidad VERI*FACTU se mantiene durante el resto del año natural.')
+        c.execute('UPDATE vf_settings SET production_since=NULL,production_by=NULL WHERE emitter_id=?',(user['emitterId'],))
+        auth.audit(c,user['id'],'Desactivar VERI*FACTU real (sin envíos este año): '+user['emitter']['name']);return public_config(c,user)
+    if settings.get('production_since'): return public_config(c,user)
+    identity=dict(c.execute('SELECT * FROM vf_identity WHERE id=1').fetchone())
+    if not identity['name'] or not identity['nif']: raise DomainError('La cuenta principal debe configurar el nombre y NIF del productor del programa.')
+    if not identity.get('declaration'): raise DomainError('Guarda primero la declaración responsable del productor.')
+    if not settings['certificate']: raise DomainError('Añade el certificado de este emisor en VERI*FACTU antes de activar el modo real.')
+    expires=json.loads(settings['certificate_info']).get('expires','')
+    if not expires or datetime.fromisoformat(expires)<=datetime.now(timezone.utc): raise DomainError('El certificado del emisor está caducado. Sustitúyelo antes de activar el modo real.')
+    xml.nif(user['emitter']['nif'])
+    if data.get('confirmDeclaration') is not True or data.get('confirmAllInvoices') is not True: raise DomainError('Confirma la declaración responsable y que todas las facturas del emisor se remitirán a la AEAT.')
+    if not user['emitter'].get('active',True): raise DomainError('El emisor está archivado.')
+    c.execute('UPDATE vf_settings SET production_since=?,production_by=? WHERE emitter_id=?',(now(),user['id'],user['emitterId']))
+    auth.audit(c,user['id'],'Activar VERI*FACTU real (AEAT producción): '+user['emitter']['name'])
+    return public_config(c,user)
 
 def secret_key(data_dir):
     dependencies();return vault(data_dir)
@@ -160,15 +212,18 @@ def protect(c,state,emitter_id):
         for key in ['vfEnabled']:
             if key in invoice and type(invoice[key]) is not bool: raise DomainError('La opción VERI*FACTU debe ser una casilla válida.')
 
-def prepare(c,invoice,state,user,kind='alta',source=None,details=None):
+def prepare(c,invoice,state,user,kind='alta',source=None,details=None,environment='preproduction'):
+    if environment not in xml.ENDPOINTS: raise DomainError('Entorno VERI*FACTU desconocido.')
     dependencies();identity=dict(c.execute('SELECT * FROM vf_identity WHERE id=1').fetchone())
-    if not identity['name'] or not identity['nif']: raise DomainError('La cuenta principal debe configurar primero el nombre y NIF del productor en VERI*FACTU de pruebas.')
-    if invoice.get('date','')>now()[:10]: raise DomainError('Una factura de pruebas AEAT no puede tener fecha futura.')
+    if not identity['name'] or not identity['nif']: raise DomainError('La cuenta principal debe configurar primero el nombre y NIF del productor en VERI*FACTU.')
+    if invoice.get('date','')>now()[:10]: raise DomainError('Una factura VERI*FACTU no puede tener fecha futura.')
     if kind!='anulacion' and invoice.get('originalId'):
         original=next((i for i in state['invoices'] if i['id']==invoice['originalId']),None)
-        if not original or not original.get('vfTest'): raise DomainError('Una rectificativa de prueba solo puede rectificar otra factura de pruebas.')
+        if environment=='preproduction' and (not original or not original.get('vfTest')): raise DomainError('Una rectificativa de prueba solo puede rectificar otra factura de pruebas.')
+        if environment=='production' and (not original or original.get('vfTest') or (original.get('verifactu') or {}).get('environment')=='preproduction'): raise DomainError('Una rectificativa real no puede rectificar una factura de pruebas.')
     else: original=None
-    last=c.execute('SELECT hash,invoice_json FROM vf_records WHERE emitter_id=? ORDER BY seq DESC LIMIT 1',(user['emitterId'],)).fetchone()
+    # Each environment has its own chain: the first real record starts a new one.
+    last=c.execute('SELECT hash,invoice_json FROM vf_records WHERE emitter_id=? AND environment=? ORDER BY seq DESC LIMIT 1',(user['emitterId'],environment)).fetchone()
     previous=None
     if last:
         prior=json.loads(last['invoice_json']);previous={'IDEmisorFactura':xml.nif(prior['companySnapshot']['nif']),'NumSerieFactura':prior['number'],'FechaExpedicionFactura':xml.date(prior['date']),'Huella':last['hash']}
@@ -177,11 +232,11 @@ def prepare(c,invoice,state,user,kind='alta',source=None,details=None):
         'anulacion' if kind=='anulacion' else 'alta',details,original)
     ident=uid()
     if kind=='alta':
-        url,image=xml.qr(invoice)
-        invoice['verifactu']={'recordId':ident,'environment':'preproduction','hash':digest,'qrUrl':url,'qrDataUrl':image}
+        url,image=xml.qr(invoice,environment)
+        invoice['verifactu']={'recordId':ident,'environment':environment,'hash':digest,'qrUrl':url,'qrDataUrl':image}
     return {'id':ident,'emitter_id':user['emitterId'],'invoice_id':invoice['id'],'kind':kind,'created_at':stamp,
         'hash':digest,'previous_hash':previous['Huella'] if previous else '', 'request_xml':request,
-        'source_id':source,'details':canonical(details or {})}
+        'source_id':source,'details':canonical(details or {}),'environment':environment}
 
 def finalize(c,prepared,invoice):
     values={**prepared,'invoice_json':canonical(invoice)}
@@ -194,7 +249,7 @@ def list_records(c,user):
     for row in rows:
         invoice=json.loads(row['invoice_json'])
         if user['role']!='admin' and invoice.get('ownerId')!=user['id']: continue
-        result.append({key:row[key] for key in ['id','invoice_id','kind','created_at','hash','previous_hash','source_id','status','attempts','csv','code','error','updated_at','next_at']}|
+        result.append({key:row[key] for key in ['id','invoice_id','kind','created_at','hash','previous_hash','source_id','status','attempts','csv','code','error','updated_at','next_at','environment']}|
                       {'number':invoice['number'],'client':invoice['clientSnapshot']['name'],'date':invoice['date']}|diagnose(dict(row),invoice))
     return result
 
@@ -205,11 +260,11 @@ def archive(c,emitter_id):
         item['delivery']=dict(c.execute('SELECT * FROM vf_jobs WHERE record_id=?',(row['id'],)).fetchone())
         item['attempts']=[{**dict(a),'response':base64.b64encode(a['response']).decode()} for a in c.execute('SELECT * FROM vf_attempts WHERE record_id=? ORDER BY id',(row['id'],))]
         records.append(item)
-    return {'environment':'preproduction','records':records,'installation':c.execute('SELECT installation FROM vf_identity WHERE id=1').fetchone()[0]}
+    return {'environments':sorted({r['environment'] for r in records}),'records':records,'installation':c.execute('SELECT installation FROM vf_identity WHERE id=1').fetchone()[0]}
 
 def require_record(c,user,ident):
     row=c.execute('SELECT r.*,j.status,j.attempts,j.csv,j.error,j.code FROM vf_records r JOIN vf_jobs j ON r.id=j.record_id WHERE r.id=? AND r.emitter_id=?',(ident,user['emitterId'])).fetchone()
-    if not row: raise auth.AccessError('Registro de pruebas no disponible.',404)
+    if not row: raise auth.AccessError('Registro VERI*FACTU no disponible.',404)
     invoice=json.loads(row['invoice_json'])
     if user['role']!='admin' and invoice.get('ownerId')!=user['id']: raise auth.AccessError('No tienes acceso a este registro.')
     return dict(row),invoice
@@ -238,8 +293,10 @@ def diagnose(row,invoice,sent=False):
     can_correct=identified and open_record and row['status'] in ('accepted_errors','rejected') and field in FIXED_BY_CORRECTION
     can_cancel=identified and open_record and row['status'] in ('accepted','accepted_errors','rejected')
     hint=CODE_HINTS.get(str(row.get('code') or ''),HINTS[field])
-    if not identified:hint+=' Tampoco se puede anular, porque la anulación debe enviar el mismo número: la AEAT nunca registró esta factura, así que se puede descartar el registro de prueba.'
-    result={'field':field,'hint':hint,'canCorrect':can_correct,'canCancel':can_cancel,'canDiscard':row['status']=='rejected' and open_record and not can_correct and not can_cancel}
+    test=row.get('environment','preproduction')=='preproduction'
+    if not identified:hint+=(' Tampoco se puede anular, porque la anulación debe enviar el mismo número: la AEAT nunca registró esta factura, así que se puede descartar el registro de prueba.' if test else ' Tampoco se puede anular desde la aplicación. Consulta con vuestra gestoría cómo regularizarlo ante la AEAT.')
+    # A real record is never discarded: only a test record the AEAT never registered.
+    result={'field':field,'hint':hint,'canCorrect':can_correct,'canCancel':can_cancel,'canDiscard':test and row['status']=='rejected' and open_record and not can_correct and not can_cancel}
     if sent:
         values={'recipientName':invoice['clientSnapshot'].get('name',''),'recipientNif':invoice['clientSnapshot'].get('nif',''),'description':''}
         try:
@@ -279,8 +336,8 @@ def action(c,user,payload,state):
         if not diagnosis['canCancel']: raise DomainError(diagnosis['hint'])
         if not isinstance(details.get('reason'),str) or not 3<=len(details['reason'].strip())<=500: raise DomainError('Indica el motivo de la anulación (entre 3 y 500 caracteres).')
         details={'reason':details['reason'].strip(),'noPrevious':row['status']=='rejected'}
-    record=prepare(c,invoice,state,user,'subsanacion' if typ=='subsanar' else 'anulacion',row['id'],details)
-    finalize(c,record,invoice);auth.audit(c,user['id'],'Crear '+record['kind']+' VERI*FACTU de pruebas')
+    record=prepare(c,invoice,state,user,'subsanacion' if typ=='subsanar' else 'anulacion',row['id'],details,row['environment'])
+    finalize(c,record,invoice);auth.audit(c,user['id'],'Crear '+record['kind']+' VERI*FACTU '+LABELS[row['environment']]+': '+invoice['number'])
     return {'recordId':record['id']}
 
 def tls_context(settings,data_dir,issuer_nif):
@@ -298,29 +355,34 @@ def tls_context(settings,data_dir,issuer_nif):
         context.load_cert_chain(cert_path,key_path)
     return context
 
-def transport(request,context):
-    # Constant destination; redirects and user-supplied URLs are never followed.
-    connection=http.client.HTTPSConnection('prewww1.aeat.es',443,context=context,timeout=25)
+def transport(request,context,environment='preproduction'):
+    # Constant destination per environment; redirects and user-supplied URLs are never followed.
+    if os.environ.get('ADG_VERIFACTU_NETWORK')=='off': raise OSError('Conexión con AEAT desactivada (ADG_VERIFACTU_NETWORK=off).')
+    url=urlparse(xml.ENDPOINTS[environment]);label=LABELS[environment]
+    connection=http.client.HTTPSConnection(url.hostname,443,context=context,timeout=25)
     try:
-        connection.request('POST','/wlpl/TIKE-CONT/ws/SistemaFacturacion/VerifactuSOAP',body=request,
-            headers={'Content-Type':'text/xml; charset=utf-8','SOAPAction':'""','User-Agent':'ADG-Finance-Experimental/1.0'})
+        connection.request('POST',url.path,body=request,
+            headers={'Content-Type':'text/xml; charset=utf-8','SOAPAction':'""','User-Agent':'ADG-Finance/'+xml.SYSTEM['version']})
         response=connection.getresponse();body=response.read(4_000_001)
-        if response.status in [401,403]: raise DomainError('AEAT no ha autorizado el certificado de este emisor en pruebas.')
-        if response.status in [301,302,303,307,308]: raise DomainError('Se ha bloqueado una redirección del servicio de pruebas.')
+        if response.status in [401,403]: raise DomainError(f'AEAT no ha autorizado el certificado de este emisor en el servicio {label}.')
+        if response.status in [301,302,303,307,308]: raise DomainError(f'Se ha bloqueado una redirección del servicio {label}.')
         if response.status>=500 and b'Fault' not in body: raise OSError('AEAT temporalmente no disponible')
-        if response.status not in [200,500]: raise DomainError('El servicio de pruebas ha devuelto HTTP '+str(response.status)+'.')
+        if response.status not in [200,500]: raise DomainError(f'El servicio {label} de la AEAT ha devuelto HTTP '+str(response.status)+'.')
         return body
     finally: connection.close()
 
-def deliver_once(connect,lock,data_dir,send=transport):
-    """Claim one job durably; no database lock is held during TLS/HTTP."""
+def deliver_once(connect,lock,data_dir,send=None):
+    """Claim one job durably; no database lock is held during TLS/HTTP.
+    Real records are always delivered; the automatic-send switch only pauses the test service."""
     with lock,connect() as c:
         c.execute('BEGIN IMMEDIATE')
         row=c.execute("""SELECT r.*,j.status AS job_status,j.attempts FROM vf_records r JOIN vf_jobs j ON r.id=j.record_id
           JOIN emitters e ON e.id=r.emitter_id JOIN vf_settings s ON s.emitter_id=r.emitter_id
-          WHERE e.active=1 AND s.auto_send=1 AND s.next_send<=? AND j.next_at<=? AND j.lease_until<=?
+          WHERE e.active=1 AND (r.environment='production' OR s.auto_send=1)
+          AND CASE WHEN r.environment='production' THEN s.next_send_production ELSE s.next_send END<=? AND j.next_at<=? AND j.lease_until<=?
           AND j.status IN ('pending','network_error','blocked','verify_pending','sending') ORDER BY r.seq LIMIT 1""",(time.time(),)*3).fetchone()
         if not row:return False
+        send=send or (lambda body,context,environment=row['environment']:transport(body,context,environment))
         record=dict(row);settings=config(c,row['emitter_id']);invoice=json.loads(row['invoice_json'])
         c.execute("UPDATE vf_jobs SET status='sending',attempts=attempts+1,lease_until=?,updated_at=? WHERE record_id=?",(time.time()+90,now(),row['id']))
     response=b'';result={};error=''
@@ -342,7 +404,7 @@ def deliver_once(connect,lock,data_dir,send=transport):
         if record['job_status']=='verify_pending' and status in ['blocked','network_error']:status='verify_pending'
         c.execute('UPDATE vf_jobs SET status=?,lease_until=0,next_at=?,csv=?,code=?,error=?,updated_at=? WHERE record_id=?',
             (status,time.time()+wait,result.get('csv',''),result.get('code',''),error or result.get('error',''),now(),record['id']))
-        c.execute('UPDATE vf_settings SET next_send=? WHERE emitter_id=?',(time.time()+wait,record['emitter_id']))
+        c.execute('UPDATE vf_settings SET '+('next_send_production' if record['environment']=='production' else 'next_send')+'=? WHERE emitter_id=?',(time.time()+wait,record['emitter_id']))
     return True
 
 def start_worker(connect,lock,data_dir):
@@ -352,7 +414,7 @@ def start_worker(connect,lock,data_dir):
             try:deliver_once(connect,lock,data_dir)
             except Exception:pass # A database/server failure leaves the durable lease for recovery.
             stop.wait(2)
-    thread=Thread(target=work,name='aeat-preproduction',daemon=True);thread.start();return stop
+    thread=Thread(target=work,name='aeat-verifactu',daemon=True);thread.start();return stop
 
 def connection_check(settings,user,data_dir):
     """Network only: the caller reads the settings and releases the database first."""

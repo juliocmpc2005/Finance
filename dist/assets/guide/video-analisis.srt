@@ -1,0 +1,71 @@
+1
+00:00:03,913 --> 00:00:07,437
+En el menú, entra en «Análisis».
+
+2
+00:00:07,437 --> 00:00:12,552
+Arriba tienes las cifras del periodo: lo emitido, lo cobrado y lo que falta por cobrar.
+
+3
+00:00:12,552 --> 00:00:15,222
+«Pendiente total» suma también lo que se debe de años anteriores.
+
+4
+00:00:15,222 --> 00:00:19,006
+La gráfica compara, mes a mes, lo facturado con lo que ha entrado en el banco.
+
+5
+00:00:19,006 --> 00:00:23,379
+Arriba eliges el periodo: el año, un trimestre, un mes o unas fechas concretas.
+
+6
+00:00:23,379 --> 00:00:29,354
+Por ejemplo, el tercer trimestre: las cifras se recalculan solas.
+
+7
+00:00:29,354 --> 00:00:32,640
+En «Pendientes de cobro» ves cada factura con lo que falta por cobrar.
+
+8
+00:00:32,640 --> 00:00:36,449
+Si un cliente te paga varias facturas con una sola transferencia, márcalas…
+
+9
+00:00:36,449 --> 00:00:39,245
+…y pulsa «Registrar cobro de la selección».
+
+10
+00:00:39,245 --> 00:00:44,469
+El importe se reparte entre las facturas marcadas. Añade la referencia de la transferencia.
+
+11
+00:00:44,469 --> 00:00:47,561
+Pulsa «Guardar cobro».
+
+12
+00:00:47,561 --> 00:00:49,964
+Las dos facturas quedan cobradas y salen de pendientes.
+
+13
+00:00:49,964 --> 00:00:54,501
+Si te pagan solo una parte, pulsa «Cobrar» en esa factura y elige «Pago parcial».
+
+14
+00:00:54,501 --> 00:01:02,451
+Indica solo lo recibido: el resto seguirá pendiente.
+
+15
+00:01:02,451 --> 00:01:05,422
+La factura queda parcialmente pagada y muestra lo que falta.
+
+16
+00:01:05,422 --> 00:01:12,848
+En «Cobros» están los ingresos recibidos, con su fecha, su cuenta y lo que queda sin aplicar.
+
+17
+00:01:12,848 --> 00:01:15,425
+Desde aquí también puedes exportarlos a una hoja de cálculo.
+
+18
+00:01:15,425 --> 00:01:21,189
+Y en «Historial», cada operación queda registrada con su fecha.

@@ -338,8 +338,17 @@ class LocalHandler:
     def send_static(self):
         target=static_file(urlparse(self.path).path)
         if not target:return self.send_error(404)
-        body=target.read_bytes()
-        self.send_response(200);self.send_header('Content-Type',mimetypes.guess_type(target.name)[0] or 'application/octet-stream');self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
+        body=target.read_bytes();kind=mimetypes.guess_type(target.name)[0] or 'application/octet-stream';size=len(body)
+        # Safari and iOS only play videos from servers that answer byte ranges (one range per request).
+        match=re.fullmatch(r'bytes=(\d*)-(\d*)',self.headers.get('Range') or '')
+        if match and (match[1] or match[2]):
+            start,end=(int(match[1]),int(match[2]) if match[2] else size-1) if match[1] else (max(0,size-int(match[2])),size-1)
+            if start>=size or start>end:
+                self.send_response(416);self.send_header('Content-Range',f'bytes */{size}');self.send_header('Content-Length','0');self.end_headers();return
+            end=min(end,size-1);body=body[start:end+1]
+            self.send_response(206);self.send_header('Content-Range',f'bytes {start}-{end}/{size}')
+        else:self.send_response(200)
+        self.send_header('Content-Type',kind);self.send_header('Accept-Ranges','bytes');self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
     def finish(self,start_response):
         if self._status is None:self._write_json({'error':'No se ha podido completar la petición.'},500)
         start_response(f'{self._status} {HTTPStatus(self._status).phrase}',self._response_headers)
@@ -478,6 +487,10 @@ class LocalHandler:
                         return self.respond(lambda:self._write_json(data))
                     return self.respond(lambda:self._write_json({'revision':revision,'state':access.project_state(json.loads(body) if body is not None else None,user,copy=False)}))
                 if path=='/api/verifactu/config':return self.send_json(verifactu.public_config(c,user))
+                if path=='/api/verifactu/declaration':
+                    row=c.execute('SELECT declaration,declaration_name FROM vf_identity WHERE id=1').fetchone()
+                    if not row or row['declaration'] is None:return self.send_json({'error':'Todavía no se ha guardado la declaración responsable.'},404)
+                    body=row['declaration'];self.send_response(200);self.send_header('Content-Type','application/pdf');self.send_header('Content-Disposition',"inline; filename*=UTF-8''"+quote(row['declaration_name'] or 'declaracion-responsable.pdf'));self.send_header('Content-Length',str(len(body)));self.end_headers();return self.wfile.write(body)
                 if path=='/api/mail/config':return self.send_json(mailer.public_config(c,user))
                 if path=='/api/verifactu/records':return self.send_json({'records':verifactu.list_records(c,user)})
                 if path.startswith('/api/verifactu/records/'):
@@ -589,7 +602,7 @@ class LocalHandler:
                     emitter=emitters.create(c,account,data) if path=='/api/emitters' else emitters.archive(c,account,path.split('/')[-1],data)
                 return self.send_json({'emitter':emitter},201 if path=='/api/emitters' else 200)
             if path.startswith('/api/verifactu/'):
-                payload=json_object(self.read_body(250_000))
+                payload=json_object(self.read_body(14_000_000 if path=='/api/verifactu/declaration' else 250_000))
                 if path=='/api/verifactu/check':
                     # Read what the check needs in a short transaction; the AEAT call runs without any database connection.
                     with LOCK,connect() as c:
@@ -598,6 +611,8 @@ class LocalHandler:
                 with LOCK,connect() as c:
                     c.execute('BEGIN IMMEDIATE');user=self.require_user(c)
                     if path=='/api/verifactu/config':result=verifactu.save_config(c,user,payload,DATA)
+                    elif path=='/api/verifactu/production':result=verifactu.set_production(c,user,payload)
+                    elif path=='/api/verifactu/declaration':result=verifactu.save_declaration(c,user,payload)
                     elif path=='/api/verifactu/action':
                         revision,state=current(c,user['emitterId']);result=verifactu.action(c,user,payload,state)
                         if payload.get('action')=='subsanar' and payload.get('updateClient') is True:
@@ -740,7 +755,7 @@ class LocalHandler:
                     result=store(c,candidate,revision,'Guardar facturas, clientes o configuración',user)
                 elif path=='/api/command':
                     if not state:raise DomainError('Primero inicializa los datos.')
-                    typ=cmd['type']
+                    typ=cmd['type'];production=False
                     if cmd.get('attachmentId'):self.authorize_attachment(c,state,user,cmd['attachmentId'])
                     if typ=='import':
                         row=c.execute('SELECT body FROM previews WHERE id=? AND emitter_id=?',(cmd.get('previewId'),user['emitterId'])).fetchone()
@@ -766,19 +781,30 @@ class LocalHandler:
                                 created_files.append(target);target.write_bytes(file['content'])
                             c.execute('INSERT OR IGNORE INTO attachments(id,name,mime,size,owner_id,emitter_id) VALUES(?,?,?,?,?,?)',(file['id'],file['name'],file['mime'],len(file['content']),user['id'],user['emitterId']))
                         desc='Restaurar copia de seguridad (copia previa conservada)'
-                    else:candidate,desc=command(state,cmd)
+                    else:
+                        # fiscal-fingerprint:start · which issued invoices go to the real AEAT service.
+                        production=typ=='issue_invoice' and verifactu.production_active(c,user['emitterId'])
+                        # Only the server decides that test invoices of a real VERI*FACTU issuer use the PRUEBAS series.
+                        cmd={**cmd,'testSeries':True} if production else {k:v for k,v in cmd.items() if k!='testSeries'}
+                        # fiscal-fingerprint:end
+                        candidate,desc=command(state,cmd)
                     if typ=='delete_invoice' and any(i['id']==cmd['invoiceId'] and i.get('status')=='draft' for i in state['invoices']):
                         # A stale tab must not bring a deleted draft back.
                         c.execute('INSERT OR REPLACE INTO retired_drafts VALUES(?,?,?,?)',(user['emitterId'],cmd['invoiceId'],next(i for i in state['invoices'] if i['id']==cmd['invoiceId']).get('ownerId') or '',now()))
                     if typ=='restore':candidate=access.normalize_restore_owners(candidate,user,{row['id'] for row in c.execute('SELECT id FROM users WHERE is_root=1 OR id IN (SELECT user_id FROM memberships WHERE emitter_id=?)',(user['emitterId'],))})
                     else:candidate=access.stamp_changes(state,candidate,user)
+                    # fiscal-fingerprint:start · creation of the VERI*FACTU record when an invoice is issued.
                     if typ in ['issue_invoice','rename_invoice']:
                         invoice=next(i for i in candidate['invoices'] if i['id']==cmd['invoiceId'])
                         prepared=None
                         if typ=='issue_invoice' and invoice.get('vfEnabled'):
                             invoice['vfTest']=True;prepared=verifactu.prepare(c,invoice,candidate,user)
+                        elif typ=='issue_invoice' and production and not invoice.get('isExample'):
+                            # VERI*FACTU real: the record is created with the invoice, or the invoice is not issued.
+                            prepared=verifactu.prepare(c,invoice,candidate,user,environment='production')
                         documents.capture(c,user['emitterId'],invoice,candidate)
                         if prepared:verifactu.finalize(c,prepared,invoice)
+                    # fiscal-fingerprint:end
                     result=store(c,candidate,revision,desc,user)
                 else:return self.send_json({'error':'Ruta no encontrada.'},404)
                 if operation:c.execute('INSERT INTO emitter_operations VALUES(?,?,?,?,?)',(user['id'],user['emitterId'],operation,signature,result['revision']))

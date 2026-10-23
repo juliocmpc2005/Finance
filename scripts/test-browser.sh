@@ -23,3 +23,4 @@ node tests/security-browser.mjs
 node tests/mail-browser.mjs
 node tests/removal-browser.mjs
 node tests/guide-browser.mjs
+node tests/verifactu-real-browser.mjs

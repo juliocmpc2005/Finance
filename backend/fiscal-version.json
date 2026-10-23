@@ -1,0 +1,24 @@
+{
+  "version": "1.0.0",
+  "fingerprint": "d44437fb79395b5a8cd1ae4eeef8483be48f2075aac17cd005783572d88d9ece",
+  "history": [
+    {
+      "version": "1.0.0",
+      "fingerprint": "f8b79800757e153869157330ac83b34333cb3922214f8f563487d6608c396718",
+      "date": "2026-10-23",
+      "note": "Nueva versión: requiere declaración responsable que la cubra."
+    },
+    {
+      "version": "1.0.0",
+      "fingerprint": "1d34066415fa64c7dbcf7e5042967f3ef8c996ecaab3df1fbad41e9ad1f94889",
+      "date": "2026-10-23",
+      "note": "Se añade a la huella el tamaño del QR (hoja de estilos); el comportamiento no cambia"
+    },
+    {
+      "version": "1.0.0",
+      "fingerprint": "d44437fb79395b5a8cd1ae4eeef8483be48f2075aac17cd005783572d88d9ece",
+      "date": "2026-10-23",
+      "note": "Se añaden a la huella las reglas del QR para móvil e impresión; el comportamiento no cambia"
+    }
+  ]
+}

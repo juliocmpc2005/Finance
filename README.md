@@ -18,6 +18,8 @@ El botón **?** (arriba a la derecha, también en el móvil) y **Guía de uso** 
 
 Las capturas (`dist/assets/guide/`, versiones de escritorio y móvil) se generan con datos de demostración en un servidor temporal, nunca con los datos reales. Después de cambiar la interfaz, regenerarlas con `PATH="$PWD/.venv/bin:$PATH" node scripts/guide-screenshots.mjs`.
 
+El primer capítulo es un **vídeo con subtítulos** (unos 80 segundos): elegir el emisor, crear un cliente, preparar la factura, revisarla, emitirla y enviarla por correo. Se puede ver dentro de la guía, también en el móvil, y descargar en MP4 con sus subtítulos en `.srt` para compartirlo. Se graba igual que las capturas, con datos de demostración, un servidor de correo local que no envía nada fuera y sin conexión con la AEAT. El capítulo «Análisis: lo que te deben» incluye otro vídeo (unos 85 segundos): las cifras del periodo y la gráfica, cambiar el periodo, cobrar dos facturas con una transferencia, un pago parcial, la pestaña Cobros y el Historial. Para regenerarlos, con `ffmpeg` instalado (`brew install ffmpeg`): `PATH="$PWD/.venv/bin:$PATH" node scripts/guide-video.mjs` y `node scripts/guide-video-analisis.mjs`. La mecánica común (servidor temporal, subtítulos, cursor y montaje) está en `scripts/video-kit.mjs`. El servidor responde por rangos de bytes, necesarios para reproducir vídeo en Safari y en iOS.
+
 ## Empresas, autónomos y usuarios
 
 La instalación admite varios emisores independientes. El selector **Empresa / autónomo** cambia el contexto de Facturas, Clientes, Análisis y Configuración. En móvil aparece encima del contenido. Cada factura pertenece al emisor seleccionado y conserva el usuario responsable, creador y emisor material. Los clientes, series de numeración, cobros, anticipos, justificantes, importaciones e historial son independientes por perfil. Dos emisores pueden tener el mismo número de factura; dentro de un emisor sigue siendo único.
@@ -160,6 +162,8 @@ Los registros históricos importados se identifican como tales; la vista generad
 
 ## Verificación
 
+**Versión fiscal.** Cada registro VERI*FACTU envía la versión del programa (`SYSTEM['version']` en `backend/verifactu_xml.py`, ahora `1.0.0`), y la declaración responsable del productor debe cubrirla. `backend/fiscal-version.json` guarda la huella SHA-256 del código con efecto fiscal: el adaptador VERI*FACTU, el generador de registros, los esquemas de la AEAT y los fragmentos marcados con `fiscal-fingerprint` en `serve.py`, la plantilla del QR y su tamaño en `dist/styles.css`. El test `tests/test_fiscal_version.py` falla si ese código cambia sin subir la versión. Tras subirla, y antes de cualquier envío real, actualizar la declaración responsable y registrar la huella con `python3 scripts/fiscal-fingerprint.py --update`. Para un cambio sin efecto fiscal se puede mantener la versión con `--update --keep-version "motivo"`; el motivo queda en el historial. `python3 scripts/fiscal-fingerprint.py` solo comprueba.
+
 ```sh
 npm test
 python3 -m unittest discover -s tests -p 'test_*.py' -v
@@ -185,11 +189,27 @@ Antes de aplicar el nuevo esquema en una instalación existente, el servidor gen
 
 Las pruebas específicas están en `tests/test_emitters.py`, `tests/test_documents.py`, `tests/templates.test.js` y `tests/emitters-browser.mjs`. El informe de esta ampliación está en [reviews/2026-10-18-multiemisor.md](reviews/2026-10-18-multiemisor.md).
 
+## VERI*FACTU real (AEAT producción)
+
+Se activa **por emisor** en **Configuración → VERI*FACTU real** (administradores). Desde la activación, todas las facturas que emite ese emisor se registran y se envían al servicio real de la AEAT (`www1.agenciatributaria.gob.es`, según el WSDL oficial fijado en `backend/verifactu_specs/`) con el QR de producción (`www2.agenciatributaria.gob.es/wlpl/TIKE-CONT/ValidarQR`, según la especificación del QR de la AEAT) y, justo debajo, «VERI*FACTU» y «Factura verificable en la sede electrónica de la AEAT». Las facturas de ejemplo no se envían.
+
+Para activarlo hacen falta la identidad del productor (cuenta principal), la **declaración responsable** del productor guardada en PDF (una sola para todo el programa: la guarda la cuenta principal en **VERI*FACTU · pruebas → Productor del programa**, junto a su nombre y NIF, y cualquier usuario puede consultarla; el emisor no aporta ninguna), un certificado vigente del emisor y dos confirmaciones. La identificación que se envía en cada registro (programa «arquitecturadeguardia Finance», identificador AF, versión 1.0.0 y número de instalación) se muestra en esa sección y debe coincidir con la declaración.
+
+- Las facturas reales cuentan como facturas normales (listados, cobros y Análisis) y no se pueden anular, eliminar ni renumerar. Se corrigen con subsanación, anulación del registro o rectificativa; un registro real nunca se descarta.
+- Cada entorno tiene su propia cadena de huellas: el primer registro real empieza una cadena nueva.
+- Los registros reales se envían siempre; el interruptor de envío automático solo afecta al entorno de pruebas.
+- El modo de pruebas sigue disponible: en un emisor con VERI*FACTU real, las facturas de pruebas usan la serie `PRUEBAS-año-número` y no consumen la numeración real.
+- Solo se puede desactivar mientras no se haya remitido ninguna factura real en el año natural.
+- Limitación: admite clientes con NIF español de 9 caracteres; una factura a un cliente extranjero no se puede emitir en un emisor con VERI*FACTU real.
+- Las pruebas automáticas nunca contactan con la AEAT: con `ADG_VERIFACTU_NETWORK=off` el servidor no abre ninguna conexión.
+
+Antes de activarlo, confirmar con la gestoría la declaración responsable, la fecha de obligación aplicable y la permanencia en la modalidad.
+
 ## VERI*FACTU experimental (solo pruebas AEAT)
 
 En **Nueva factura** puedes marcar **VERI*FACTU · Pruebas AEAT**. Está desmarcada inicialmente; el borrador sigue siendo editable. Al emitir se fija su contenido y su número de prueba, incluso si el envío falla o es rechazado. Las correcciones generan registros nuevos. Los documentos `VF-F`/`VF-R` y sus cobros se mantienen fuera de los listados e informes habituales.
 
-Instala el adaptador con `sh scripts/setup-verifactu.sh` y arranca con `npm start`. En **VERI*FACTU · pruebas**, la cuenta principal configura la identidad del productor; los administradores añaden el certificado propio de cada empresa o autónomo. El envío automático permanece desactivado hasta activarlo para ese emisor. El destino está limitado al entorno oficial de pruebas y no existe opción de producción.
+Instala el adaptador con `sh scripts/setup-verifactu.sh` y arranca con `npm start`. En **VERI*FACTU · pruebas**, la cuenta principal configura la identidad del productor; los administradores añaden el certificado propio de cada empresa o autónomo. El envío automático permanece desactivado hasta activarlo para ese emisor. Este modo usa siempre el entorno oficial de pruebas; el envío real se activa aparte, por emisor (ver «VERI*FACTU real»).
 
 La importación requiere un PKCS#12 `.pfx` o `.p12` con su clave privada. Distingue las copias que se abren pero carecen de clave privada, las exportaciones públicas CER/CRT o P7B renombradas y los cifrados no compatibles. Un fallo de descifrado no demuestra por sí solo que la contraseña sea incorrecta: también puede deberse a un archivo dañado o una exportación incompatible. Una importación fallida conserva el certificado y la configuración anteriores. Las pruebas cubren AES-256, TripleDES y contraseñas con caracteres no ASCII y espacios, sin recortarlas.
 

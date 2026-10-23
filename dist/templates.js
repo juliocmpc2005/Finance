@@ -10,13 +10,16 @@ export const selectedTemplate=(invoice,company)=>invoice.templateSnapshot?.id||i
 export function renderPaper(invoice,{client,company,originalNumber=''}){
  const co=company(invoice),id=selectedTemplate(invoice,co);
  const paper=id==='adg-original'?originalPaper(invoice,{client,company,originalNumber}):genericPaper(invoice,{client,company,originalNumber},id);
+ // fiscal-fingerprint:start · VERI*FACTU block (QR and legend); changing it requires a new program version.
  if(!invoice.verifactu)return paper;
  const vf=invoice.verifactu,image=/^data:image\/svg\+xml;base64,[A-Za-z0-9+/=]+$/.test(vf.qrDataUrl||'')?vf.qrDataUrl:'';
- const block=`<section class="vf-paper"><div><strong>VERI*FACTU · PRUEBAS AEAT</strong><p>QR tributario · entorno de pruebas</p><small>Documento experimental · sin validez fiscal</small></div>${image?`<img src="${image}" alt="QR tributario de pruebas AEAT" width="132" height="132">`:''}</section>`;
+ // Real invoices: QR at the start of the document with the AEAT phrase right below it (AEAT QR specification).
+ const block=vf.environment==='production'?`<section class="vf-paper vf-real">${image?`<figure><img src="${image}" alt="QR tributario VERI*FACTU" width="132" height="132"><figcaption>VERI*FACTU</figcaption></figure>`:''}<div><strong>Factura verificable en la sede electrónica de la AEAT</strong></div></section>`:`<section class="vf-paper"><div><strong>VERI*FACTU · PRUEBAS AEAT</strong><p>QR tributario · entorno de pruebas</p><small>Documento experimental · sin validez fiscal</small></div>${image?`<img src="${image}" alt="QR tributario de pruebas AEAT" width="132" height="132">`:''}</section>`;
  return paper.replace('class="invoice-paper','class="invoice-paper vf-document').replace('</header>','</header>'+block);
+ // fiscal-fingerprint:end
 }
 function invoiceNotice(i){
- const text=i.isExample?'FACTURA DE EJEMPLO · SIN VALIDEZ FISCAL':i.verifactu||i.vfTest||i.vfEnabled?'VERI*FACTU · PRUEBAS AEAT · SIN VALIDEZ FISCAL':i.imported?'DATOS HISTÓRICOS IMPORTADOS · NO SUSTITUYE AL DOCUMENTO ORIGINAL':i.isTemplateSample?'VISTA DE EJEMPLO DE LA PLANTILLA · SIN VALIDEZ FISCAL':i.isDemo?'DOCUMENTO DE EJEMPLO · SIN VALIDEZ FISCAL':'';
+ const text=i.isExample?'FACTURA DE EJEMPLO · SIN VALIDEZ FISCAL':(i.verifactu&&i.verifactu.environment!=='production')||i.vfTest||i.vfEnabled?'VERI*FACTU · PRUEBAS AEAT · SIN VALIDEZ FISCAL':i.imported?'DATOS HISTÓRICOS IMPORTADOS · NO SUSTITUYE AL DOCUMENTO ORIGINAL':i.isTemplateSample?'VISTA DE EJEMPLO DE LA PLANTILLA · SIN VALIDEZ FISCAL':i.isDemo?'DOCUMENTO DE EJEMPLO · SIN VALIDEZ FISCAL':'';
  return text?`<div class="paper-demo">${text}</div>`:'';
 }
 // Preserve the rendering of already sealed experimental documents.

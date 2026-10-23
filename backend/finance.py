@@ -104,13 +104,15 @@ def default_series_prefix(state):
     if company.get('seriesPrefix'):return company['seriesPrefix']
     return 'ADG' if state.get('emitterId','adg-original')=='adg-original' else series_initials(company.get('name'))
 
-def invoice_series(state,invoice):
-    """A custom series applies only without VERI*FACTU; otherwise the issuer default with quarter and year."""
+def invoice_series(state,invoice,test_series=False):
+    """A custom series applies only without VERI*FACTU; otherwise the issuer default with quarter and year.
+    With VERI*FACTU real active, test invoices use PRUEBAS-año so they never take a number of the real series."""
+    if test_series and invoice.get('vfEnabled'):return f"PRUEBAS{'-R' if invoice.get('originalId') else ''}-{invoice['date'][:4]}"
     if invoice.get('series') and not invoice.get('vfEnabled'):return invoice['series']
     year=invoice['date'][:4];quarter=(int(invoice['date'][5:7])-1)//3+1
     return f"{default_series_prefix(state)}{'-R' if invoice.get('originalId') else ''}-{quarter}T-{year}"
 
-def next_invoice_number(state,invoice):
+def next_invoice_number(state,invoice,test_series=False):
     require_date(invoice.get('date'))
     year=invoice['date'][:4]
     if invoice.get('isExample'):
@@ -121,7 +123,7 @@ def next_invoice_number(state,invoice):
                 match=re.fullmatch(re.escape(series)+'-'+year+r'-(\d+)',str(value or '').strip().upper())
                 if match:maximum=max(maximum,int(match[1]))
         return f'{series}-{year}-{maximum+1:02d}'
-    series=invoice_series(state,invoice);maximum=0
+    series=invoice_series(state,invoice,test_series);maximum=0
     # One counter per series. Quarterly series (PS-4T-2026) count annually across quarters.
     # All historical names remain reserved, including numbers changed manually.
     quarterly=QUARTERLY_SERIES.fullmatch(series)
@@ -150,7 +152,7 @@ def validate_description(invoice):
     description=invoice.get('description','')
     if not isinstance(description,str) or len(description)>2000:raise DomainError('La descripción de la factura debe ser texto de hasta 2000 caracteres.')
 
-def issue_invoice(state,invoice_id):
+def issue_invoice(state,invoice_id,test_series=False):
     invoice=next((i for i in state['invoices'] if i['id']==invoice_id),None)
     if not invoice or invoice.get('status')!='draft':raise DomainError('Selecciona un borrador para emitir.')
     if invoice.get('isExample') and invoice.get('vfEnabled'):raise DomainError('Una factura de ejemplo no puede utilizar VERI*FACTU.')
@@ -183,7 +185,7 @@ def issue_invoice(state,invoice_id):
     rate(invoice.get('withholdingRate',0))
     invoice['presentationSnapshot']={'version':5,'showNumber':True,'showHonorariaTitle':False}
     invoice['templateSnapshot']={'id':template_id(invoice,state['company'],state.get('emitterId','adg-original')=='adg-original'),'version':1}
-    invoice.update(number=next_invoice_number(state,invoice),status='issued',issuedAt=now(),clientSnapshot=deepcopy(client),companySnapshot=deepcopy(state['company']))
+    invoice.update(number=next_invoice_number(state,invoice,test_series),status='issued',issuedAt=now(),clientSnapshot=deepcopy(client),companySnapshot=deepcopy(state['company']))
     return invoice
 
 def has_price(line): return str(line.get('price') if line.get('price') is not None else '').strip()!=''
@@ -402,7 +404,7 @@ def add_allocations(state,payment,items,allocation_date=None,rounding=True):
 def command(state,cmd):
     state=initialize(deepcopy(state));kind=cmd.get('type');description=''
     if kind=='issue_invoice':
-        invoice=issue_invoice(state,cmd.get('invoiceId'));description=('Crear factura de ejemplo: ' if invoice.get('isExample') else 'Emitir factura: ')+invoice['number']
+        invoice=issue_invoice(state,cmd.get('invoiceId'),cmd.get('testSeries') is True);description=('Crear factura de ejemplo: ' if invoice.get('isExample') else 'Emitir factura: ')+invoice['number']
     elif kind=='rename_invoice':
         invoice=next((i for i in state['invoices'] if i['id']==cmd.get('invoiceId')),None)
         if not invoice or invoice.get('status')!='issued':raise DomainError('Selecciona una factura emitida para cambiar su número.')

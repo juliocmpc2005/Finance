@@ -1,4 +1,4 @@
-"""AEAT v1.0 XML, SHA-256 chaining and QR. Preproduction only.
+"""AEAT v1.0 XML, SHA-256 chaining and QR for the AEAT test (preproduction) and real (production) services.
 
 Specifications and original schemas are pinned in verifactu_specs/manifest.json.
 No XML parser in this module loads network resources or expands entities.
@@ -19,8 +19,15 @@ except ImportError:
 BASE = 'https://www2.agenciatributaria.gob.es/static_files/common/internet/dep/aplicaciones/es/aeat/tike/cont/ws/'
 SF, LR, RC, RS = (BASE+n+'.xsd' for n in ['SuministroInformacion','SuministroLR','ConsultaLR','RespuestaSuministro'])
 SOAP = 'http://schemas.xmlsoap.org/soap/envelope/'
-ENDPOINT = 'https://prewww1.aeat.es/wlpl/TIKE-CONT/ws/SistemaFacturacion/VerifactuSOAP'
-QR_BASE = 'https://prewww2.aeat.es/wlpl/TIKE-CONT/ValidarQR'
+# Fixed destinations, never taken from user input. Submission: SistemaFacturacion.wsdl (pinned in
+# verifactu_specs, certificate ports). QR: AEAT «Detalle de las especificaciones técnicas del código QR».
+ENDPOINTS = {'preproduction':'https://prewww1.aeat.es/wlpl/TIKE-CONT/ws/SistemaFacturacion/VerifactuSOAP',
+             'production':'https://www1.agenciatributaria.gob.es/wlpl/TIKE-CONT/ws/SistemaFacturacion/VerifactuSOAP'}
+QR_BASES = {'preproduction':'https://prewww2.aeat.es/wlpl/TIKE-CONT/ValidarQR',
+            'production':'https://www2.agenciatributaria.gob.es/wlpl/TIKE-CONT/ValidarQR'}
+ENDPOINT, QR_BASE = ENDPOINTS['preproduction'], QR_BASES['preproduction']
+# Identification sent in every record; it must match the producer's declaración responsable.
+SYSTEM = {'name':'arquitecturadeguardia Finance','id':'AF','version':'1.0.0'}
 SPECS = Path(__file__).with_name('verifactu_specs')
 _schemas = {}
 
@@ -92,8 +99,8 @@ def invoice_id(parent,invoice,cancel=False):
 def system(parent,identity,multi):
     info=node(parent,'SistemaInformatico')
     for key,value in [('NombreRazon',identity['name']),('NIF',nif(identity['nif'])),
-        ('NombreSistemaInformatico','arquitecturadeguardia Finance'),('IdSistemaInformatico','AF'),
-        ('Version','1.0.0-experimental.1'),('NumeroInstalacion',identity['installation']),
+        ('NombreSistemaInformatico',SYSTEM['name']),('IdSistemaInformatico',SYSTEM['id']),
+        ('Version',SYSTEM['version']),('NumeroInstalacion',identity['installation']),
         ('TipoUsoPosibleSoloVerifactu','N'),('TipoUsoPosibleMultiOT','S'),('IndicadorMultiplesOT','S' if multi else 'N')]:
         node(info,key,value)
 
@@ -163,9 +170,9 @@ def build(invoice,identity,previous,stamp,multi=False,kind='alta',correction=Non
     check_xml(body,'SuministroLR.xsd')
     return envelope(body),digest
 
-def qr(invoice):
+def qr(invoice,environment='preproduction'):
     base,vat,_=invoice_totals(invoice)
-    url=QR_BASE+'?'+urlencode({'nif':nif(invoice['companySnapshot']['nif']),'numserie':invoice['number'],'fecha':date(invoice['date']),'importe':money(base+vat)})
+    url=QR_BASES[environment]+'?'+urlencode({'nif':nif(invoice['companySnapshot']['nif']),'numserie':invoice['number'],'fecha':date(invoice['date']),'importe':money(base+vat)})
     image=qrcode.make(url,image_factory=qrcode.image.svg.SvgPathImage,error_correction=qrcode.constants.ERROR_CORRECT_M,box_size=4,border=4)
     output=io.BytesIO();image.save(output)
     return url,'data:image/svg+xml;base64,'+base64.b64encode(output.getvalue()).decode()

@@ -192,6 +192,16 @@ Ubuntu instala solo las actualizaciones de seguridad. Algunas (kernel) necesitan
 
 **Después de cualquier cambio de código hay que reiniciar el servicio** (el script lo hace). En el Mac pasa lo mismo con `npm start`: un servidor arrancado antes de un cambio no conoce las rutas nuevas y muestra «Ruta no encontrada».
 
+## Versión del programa y declaración responsable
+
+Cada registro que se envía a la AEAT dice qué versión del programa lo generó (ahora `1.0.0`), y la declaración responsable firmada por el productor tiene que cubrir esa versión. Regla para cualquier actualización:
+
+1. Si se cambia código con efecto fiscal, el test `tests/test_fiscal_version.py` falla. Ese código es el adaptador VERI*FACTU, el generador de registros, los esquemas de la AEAT, la creación del registro al emitir, el QR y su tamaño.
+2. En ese caso, subir la versión en `backend/verifactu_xml.py` (por ejemplo, `1.0.1`), **firmar una declaración responsable que cubra la nueva versión** y guardarla en VERI*FACTU · pruebas → Productor del programa.
+3. Registrar la huella con `python3 scripts/fiscal-fingerprint.py --update`.
+4. Solo si el cambio no tiene efecto fiscal (un texto de ayuda, por ejemplo), mantener la versión con `--update --keep-version "motivo"`. En caso de duda, subir la versión.
+5. No instalar en el servidor una versión nueva sin su declaración: los registros reales la llevarían desde el primer envío.
+
 ## Copias de seguridad
 
 Lo que ya hace la aplicación:
@@ -236,4 +246,5 @@ Detalle en el [README principal](../README.md):
 - [ ] **Comprobar a través de Cloudflare** que el límite de intentos de acceso se aplica a cada persona y no a toda la oficina: la aplicación toma la IP de la cabecera `X-Forwarded-For` de las conexiones locales, que Cloudflare debería enviar a través del túnel. Prueba: varios intentos fallidos desde el móvil no deben bloquear el acceso desde la oficina.
 - [ ] Configurar la **copia externa** diaria y ensayar una restauración.
 - [ ] Decidir el **formato del número en la factura** («2026-59» en lugar de «ADG-4T-2026-59»): quedaron abiertas cuatro dudas — mostrar la serie en pequeño o no, formato de las rectificativas («R-2026-01»), qué referencia pedir para la transferencia y si se aplica solo a facturas nuevas. La serie debe constar en la factura según el Reglamento de facturación (art. 6.1.a).
+- [ ] **VERI*FACTU real** (implementado el 23/10/2026, desactivado hasta activarlo por emisor). Antes de activarlo: confirmar con la gestoría la declaración responsable (identificación «arquitecturadeguardia Finance», AF, versión 1.0.0), la fecha de obligación y la permanencia en la modalidad; decidir el valor de `TipoUsoPosibleSoloVerifactu` (ahora «N»: el programa también emite facturas sin VERI*FACTU, pero no implementa los requisitos del modo NO VERI*FACTU, como la firma y el registro de eventos); revisar el primer envío real y su QR en la sede de la AEAT. Solo admite clientes con NIF español.
 - [ ] Opcionales comentados: «des-anular» una factura; ocultar el puerto en la configuración del correo (deducirlo de la seguridad).

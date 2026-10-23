@@ -1,0 +1,71 @@
+1
+00:00:03,909 --> 00:00:07,748
+Primero, elige arriba a la izquierda con qué empresa o autónomo vas a facturar.
+
+2
+00:00:07,748 --> 00:00:10,625
+Cada empresa o autónomo tiene sus propios clientes, facturas y numeración.
+
+3
+00:00:10,625 --> 00:00:13,700
+Ahora el cliente. En el menú, entra en «Clientes».
+
+4
+00:00:13,700 --> 00:00:16,165
+Pulsa «Nuevo cliente».
+
+5
+00:00:16,165 --> 00:00:24,934
+Escribe el nombre o razón social, el NIF y la dirección fiscal: son obligatorios para facturar.
+
+6
+00:00:24,934 --> 00:00:28,919
+Añade también su correo: será el destinatario cuando le envíes la factura.
+
+7
+00:00:28,919 --> 00:00:32,185
+Pulsa «Guardar cliente». Ya lo tienes para todas sus facturas.
+
+8
+00:00:32,185 --> 00:00:36,813
+Ahora la factura. Ve a «Facturas» y pulsa «Nueva factura».
+
+9
+00:00:36,813 --> 00:00:40,297
+«Emitiendo como» confirma el emisor de la factura. Puedes cambiarlo antes de emitir.
+
+10
+00:00:40,297 --> 00:00:43,247
+En «¿A quién facturamos?», elige el cliente.
+
+11
+00:00:43,247 --> 00:00:52,126
+Escribe el concepto y su precio sin IVA. El total se calcula solo, a la derecha.
+
+12
+00:00:52,126 --> 00:00:55,296
+Mientras escribes, el borrador se guarda solo. Cuando esté listo, pulsa «Revisar factura».
+
+13
+00:00:55,296 --> 00:00:58,499
+Así quedará el documento. Comprueba el cliente, el concepto y los importes.
+
+14
+00:00:58,499 --> 00:01:02,267
+Si todo está bien, pulsa «Emitir factura». Recibe su número y ya no se puede modificar.
+
+15
+00:01:02,267 --> 00:01:04,845
+Desde aquí puedes descargar el PDF cuando lo necesites.
+
+16
+00:01:04,845 --> 00:01:07,414
+Para mandársela al cliente, pulsa «Enviar por correo».
+
+17
+00:01:07,414 --> 00:01:15,073
+Su correo ya viene puesto. Revisa el asunto y el mensaje, y pulsa «Enviar».
+
+18
+00:01:15,073 --> 00:01:18,277
+Listo: la factura está emitida y enviada, y queda registrado el envío.
