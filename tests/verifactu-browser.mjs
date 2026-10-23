@@ -40,7 +40,14 @@ try{
  // AEAT replies are simulated in the job table; the fiscal records themselves stay untouched.
  const reply=(kind,status)=>{const result=spawnSync(python,['-c',"import sqlite3,sys;c=sqlite3.connect(sys.argv[1]);c.execute('UPDATE vf_jobs SET status=? WHERE record_id IN (SELECT id FROM vf_records WHERE kind=?)',(sys.argv[3],sys.argv[2]));c.commit()",join(directory,'finance.sqlite'),kind,status]);assert.equal(result.status,0,String(result.stderr));};
  const original=()=>p.locator('#vf-record-rows tbody tr').last(); // Newest first: the original alta is the last row.
- reply('alta','rejected');await p.setViewportSize({width:1440,height:1100});await p.reload();await p.locator('[data-nav=verifactu]').click();await original().getByRole('button',{name:'Anular registro',exact:true}).click();
+ const fail=(error,code)=>{const result=spawnSync(python,['-c',"import sqlite3,sys;c=sqlite3.connect(sys.argv[1]);c.execute(\"UPDATE vf_jobs SET error=?,code=? WHERE record_id IN (SELECT id FROM vf_records WHERE kind='alta')\",(sys.argv[2],sys.argv[3]));c.commit()",join(directory,'finance.sqlite'),error,code]);assert.equal(result.status,0,String(result.stderr));};
+ reply('alta','rejected');fail('Error en el bloque Destinatario.. El NIF no está identificado en el censo de la AEAT..','1239');await p.setViewportSize({width:1440,height:1100});await p.reload();await p.locator('[data-nav=verifactu]').click();
+ // The correction dialog explains the AEAT answer and starts from the data that was sent.
+ await original().getByText(/Qué hacer:/).waitFor();await original().getByRole('button',{name:'Subsanar registro',exact:true}).click();
+ await p.locator('.vf-diagnosis',{hasText:'código 1239'}).waitFor();assert.ok((await p.locator('#vf-recipient-name').inputValue()).length>0);assert.ok((await p.locator('#vf-recipient-nif').inputValue()).length>0);
+ assert.equal(await p.locator('.vf-field-error').count(),2);assert.ok(await p.locator('[name=updateClient]').isChecked());
+ await p.screenshot({path:join(process.env.VF_SCREENSHOTS||directory,'vf-correction.png')});await p.locator('dialog').getByRole('button',{name:'Cerrar'}).click();
+ await original().getByRole('button',{name:'Anular registro',exact:true}).click();
  await p.locator('#vf-reason').fill('Destinatario incorrecto');await p.getByRole('button',{name:'Crear anulación de prueba',exact:true}).click();await p.waitForFunction(()=>!document.querySelector('dialog').open);
  await original().getByText('Anulación en curso',{exact:true}).waitFor();assert.equal(await original().getByRole('button',{name:/Anular registro|Subsanar registro/}).count(),0);
  reply('anulacion','accepted');await p.reload();await p.locator('[data-nav=verifactu]').click();await original().getByText(`Anulado el ${new Date().toLocaleDateString('es-ES')}`,{exact:true}).waitFor();assert.equal(await original().getByRole('button',{name:/Anular registro|Subsanar registro/}).count(),0);

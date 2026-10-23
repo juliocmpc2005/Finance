@@ -485,7 +485,7 @@ class LocalHandler:
                     if len(parts)==6 and parts[5]=='xml':
                         body=record['request_xml'];self.send_response(200);self.send_header('Content-Type','application/xml; charset=utf-8');self.send_header('Content-Disposition','attachment; filename="registro-pruebas.xml"');self.send_header('Content-Length',str(len(body)));self.end_headers();return self.wfile.write(body)
                     attempts=[dict(r) for r in c.execute('SELECT created_at,status,error FROM vf_attempts WHERE record_id=? ORDER BY id DESC LIMIT 50',(record['id'],))]
-                    return self.send_json({'record':{k:v for k,v in record.items() if k not in ['request_xml','invoice_json']},'attempts':attempts})
+                    return self.send_json({'record':{k:v for k,v in record.items() if k not in ['request_xml','invoice_json']},'attempts':attempts,'diagnosis':verifactu.diagnose(record,invoice,True)})
                 if path=='/api/team':
                     rows=c.execute('SELECT id,name FROM users WHERE is_root=1 OR id IN (SELECT user_id FROM memberships WHERE emitter_id=?) ORDER BY name',(user['emitterId'],)) if user['role']=='admin' else c.execute('SELECT id,name FROM users WHERE id=?',(user['id'],))
                     return self.send_json({'members':[dict(row) for row in rows]})
@@ -599,7 +599,9 @@ class LocalHandler:
                     c.execute('BEGIN IMMEDIATE');user=self.require_user(c)
                     if path=='/api/verifactu/config':result=verifactu.save_config(c,user,payload,DATA)
                     elif path=='/api/verifactu/action':
-                        _,state=current(c,user['emitterId']);result=verifactu.action(c,user,payload,state)
+                        revision,state=current(c,user['emitterId']);result=verifactu.action(c,user,payload,state)
+                        if payload.get('action')=='subsanar' and payload.get('updateClient') is True:
+                            result['clientUpdated']=update_client_from_correction(c,user,state,revision,payload)
                     else:raise auth.AccessError('Ruta no encontrada.',404)
                 return self.send_json(result)
             if path.startswith('/api/mail/') or (path.startswith('/api/invoices/') and path.endswith('/email')):
@@ -791,6 +793,16 @@ class LocalHandler:
         finally:
             if not committed:
                 for target in created_files:target.unlink(missing_ok=True)
+
+def update_client_from_correction(c,user,state,revision,payload):
+    """A recipient corrected for the AEAT is also corrected in the client file, so the next invoices do not fail again."""
+    details=payload.get('details') or {};_,invoice=verifactu.require_record(c,user,payload.get('recordId'))
+    candidate=deepcopy(state);client=next((x for x in candidate['clients'] if x['id']==invoice.get('clientId')),None)
+    if not client or (user['role']!='admin' and client.get('ownerId')!=user['id']):return False
+    changes={'name':str(details.get('recipientName') or '').strip(),'nif':''.join(str(details.get('recipientNif') or '').split()).upper()}
+    changes={key:value for key,value in changes.items() if value and value!=client.get(key)}
+    if not changes:return False
+    client.update(changes);store(c,candidate,revision,'Corregir datos fiscales del cliente desde VERI*FACTU: '+client['name'],user);return True
 
 def issued_document(c,user,state,ident):
     """The preserved document of an issued invoice, the same one for downloads and e-mails."""

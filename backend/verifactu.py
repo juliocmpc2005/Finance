@@ -195,7 +195,7 @@ def list_records(c,user):
         invoice=json.loads(row['invoice_json'])
         if user['role']!='admin' and invoice.get('ownerId')!=user['id']: continue
         result.append({key:row[key] for key in ['id','invoice_id','kind','created_at','hash','previous_hash','source_id','status','attempts','csv','code','error','updated_at','next_at']}|
-                      {'number':invoice['number'],'client':invoice['clientSnapshot']['name'],'date':invoice['date']})
+                      {'number':invoice['number'],'client':invoice['clientSnapshot']['name'],'date':invoice['date']}|diagnose(dict(row),invoice))
     return result
 
 def archive(c,emitter_id):
@@ -214,11 +214,54 @@ def require_record(c,user,ident):
     if user['role']!='admin' and invoice.get('ownerId')!=user['id']: raise auth.AccessError('No tienes acceso a este registro.')
     return dict(row),invoice
 
+# A subsanación only resends the recipient and the description: the invoice identification
+# (number, date, issuer) and the amounts cannot change. The AEAT message tells which block failed.
+FAILED_FIELDS=[('recipient',('destinatario',)),('description',('descripcionoperacion',)),('number',('numseriefactura','idfactura')),
+    ('date',('fechaexpedicion',)),('issuer',('idemisorfactura','obligadoemision')),('amounts',('desglose','baseimponible','cuotarepercutida','tipoimpositivo','importetotal'))]
+FIXED_BY_CORRECTION={'recipient','description',None}
+HINTS={'recipient':'La AEAT no acepta los datos del destinatario. Comprueba que el NIF y el nombre o razón social coinciden exactamente con los de su alta en Hacienda.',
+    'description':'Revisa la descripción de la operación que se envió.',
+    'number':'El error está en el número de la factura. Una subsanación no puede cambiarlo: forma parte de la identificación de la factura.',
+    'date':'El error está en la fecha de expedición, que forma parte de la identificación de la factura y no se cambia al subsanar.',
+    'issuer':'El error está en los datos del emisor. No se cambian al subsanar: revisa el NIF y la razón social en Configuración.',
+    'amounts':'El error está en los importes o el IVA. Una subsanación no cambia importes: si la factura está mal, utiliza una factura rectificativa.',
+    None:'La subsanación permite corregir el nombre y el NIF del destinatario y la descripción del registro.'}
+CODE_HINTS={'1239':'La AEAT no encuentra ese NIF con ese nombre en su censo. Comprueba el NIF y escribe el nombre o razón social exactamente como figura en Hacienda.'}
+
+def diagnose(row,invoice,sent=False):
+    """What failed and which corrections can succeed; with sent=True, also the values that were sent."""
+    message=(row.get('error') or '').lower().replace(' ','');field=next((name for name,keys in FAILED_FIELDS if any(k in message for k in keys)),None)
+    try: xml.validate_invoice_number(invoice['number']);xml.nif(invoice['companySnapshot']['nif']);identified=True
+    except DomainError as error:
+        identified=False;field=field if field in ('number','issuer') else ('number' if 'número' in str(error) else 'issuer')
+    open_record=row['kind']!='anulacion'
+    can_correct=identified and open_record and row['status'] in ('accepted_errors','rejected') and field in FIXED_BY_CORRECTION
+    can_cancel=identified and open_record and row['status'] in ('accepted','accepted_errors','rejected')
+    hint=CODE_HINTS.get(str(row.get('code') or ''),HINTS[field])
+    if not identified:hint+=' Tampoco se puede anular, porque la anulación debe enviar el mismo número: la AEAT nunca registró esta factura, así que se puede descartar el registro de prueba.'
+    result={'field':field,'hint':hint,'canCorrect':can_correct,'canCancel':can_cancel,'canDiscard':row['status']=='rejected' and open_record and not can_correct and not can_cancel}
+    if sent:
+        values={'recipientName':invoice['clientSnapshot'].get('name',''),'recipientNif':invoice['clientSnapshot'].get('nif',''),'description':''}
+        try:
+            root=xml.parse(row['request_xml']);recipient=root.xpath('//*[local-name()="IDDestinatario"]')
+            if recipient:values.update(recipientName=xml.text(recipient[0],'NombreRazon'),recipientNif=xml.text(recipient[0],'NIF'))
+            values['description']=xml.text(root,'DescripcionOperacion')
+        except (DomainError,AttributeError):pass
+        result['sent']=values
+    return result
+
 def action(c,user,payload,state):
     row,invoice=require_record(c,user,payload.get('recordId'));typ=payload.get('action')
     if typ=='retry':
         if row['status'] not in ['pending','network_error','blocked','verify_pending']: raise DomainError('Un registro aceptado o rechazado requiere su procedimiento de corrección; no se reenvía libremente.')
         c.execute("UPDATE vf_jobs SET next_at=0 WHERE record_id=? AND lease_until<?",(row['id'],time.time()));return {'queued':True}
+    diagnosis=diagnose(row,invoice)
+    if typ=='discard':
+        auth.require_admin(user)
+        if not diagnosis['canDiscard']: raise DomainError('Solo se descartan registros rechazados que no se pueden subsanar ni anular.')
+        # The record and its AEAT response stay; only the delivery state records the decision.
+        c.execute("UPDATE vf_jobs SET status='discarded',updated_at=? WHERE record_id=?",(now(),row['id']))
+        auth.audit(c,user['id'],'Descartar registro VERI*FACTU de pruebas no registrado por AEAT: '+invoice['number']);return {'discarded':True}
     if typ not in ['subsanar','anular']: raise DomainError('Acción VERI*FACTU no válida.')
     details=payload.get('details',{})
     if not isinstance(details,dict): raise DomainError('Revisa los datos de la corrección.')
@@ -228,10 +271,12 @@ def action(c,user,payload,state):
     if row['status'] not in ['accepted','accepted_errors','rejected']: raise DomainError('Espera a conocer el resultado del envío antes de corregirlo.')
     if typ=='subsanar':
         if row['status'] not in ['accepted_errors','rejected']: raise DomainError('Este registro no tiene errores pendientes de subsanación.')
+        if not diagnosis['canCorrect']: raise DomainError(diagnosis['hint'])
         if set(details)-{'recipientName','recipientNif','description'}: raise DomainError('La corrección contiene campos no permitidos.')
         details={key:str(value).strip() for key,value in details.items() if value}
         details['rejected']=row['status']=='rejected'
     else:
+        if not diagnosis['canCancel']: raise DomainError(diagnosis['hint'])
         if not isinstance(details.get('reason'),str) or not 3<=len(details['reason'].strip())<=500: raise DomainError('Indica el motivo de la anulación (entre 3 y 500 caracteres).')
         details={'reason':details['reason'].strip(),'noPrevious':row['status']=='rejected'}
     record=prepare(c,invoice,state,user,'subsanacion' if typ=='subsanar' else 'anulacion',row['id'],details)

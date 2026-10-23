@@ -156,6 +156,16 @@ class XmlTests(unittest.TestCase):
             self.assertNotIn('synthetic detail',str(caught.exception))
 
 @unittest.skipUnless(x.E is not None and vf.Fernet is not None,'Install requirements.txt for fiscal tests')
+class DiagnosisTests(unittest.TestCase):
+    def test_a_correction_only_changes_recipient_and_description(self):
+        inv=invoice()
+        for error,field,correct,cancel in [('Error en el bloque Destinatario',  'recipient',True,True),('El campo NumSerieFactura no es válido','number',False,True),
+                                           ('Desglose: la CuotaRepercutida no es correcta','amounts',False,True),('',None,True,True)]:
+            result=vf.diagnose({'kind':'alta','status':'rejected','error':error,'code':''},inv)
+            self.assertEqual((result['field'],result['canCorrect'],result['canCancel'],result['canDiscard']),(field,correct,cancel,False),error)
+        accepted=vf.diagnose({'kind':'alta','status':'accepted','error':'','code':''},inv);self.assertEqual((accepted['canCorrect'],accepted['canCancel']),(False,True))
+        cancelled=vf.diagnose({'kind':'anulacion','status':'rejected','error':'','code':''},inv);self.assertEqual((cancelled['canCorrect'],cancelled['canCancel'],cancelled['canDiscard']),(False,False,False))
+
 class WorkerTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.data=Path(self.temp.name);self.path=self.data/'finance.sqlite';self.lock=RLock()
@@ -268,6 +278,35 @@ class FiscalApiTests(unittest.TestCase):
         status,result,_=self.root.request('/api/verifactu/action',{'action':'anular','recordId':correction,'details':{'reason':'Documento de prueba expedido por error'}},headers=self.headers)
         self.assertEqual(status,200,result);self.assertEqual(self.state(),before)
         records=self.root.request('/api/verifactu/records',headers=self.headers)[1]['records'];self.assertEqual(len(records),3);self.assertEqual(records[0]['kind'],'anulacion')
+    def reject(self,record,error='',code=''):
+        with closing(sqlite3.connect(Path(self.temp.name)/'finance.sqlite')) as c,c:
+            c.execute("UPDATE vf_jobs SET status='rejected',error=?,code=? WHERE record_id=?",(error,code,record))
+    def records(self):return {r['id']:r for r in self.root.request('/api/verifactu/records',headers=self.headers)[1]['records']}
+    def test_correction_shows_the_error_and_sent_data_and_can_fix_the_client_file(self):
+        inv=self.issue();record=inv['verifactu']['recordId'];invoices=self.state()['state']['invoices']
+        self.reject(record,'Error en el bloque Destinatario.. El NIF no está identificado en el censo de la AEAT..','1239')
+        listed=self.records()[record]
+        self.assertEqual((listed['field'],listed['canCorrect'],listed['canCancel'],listed['canDiscard']),('recipient',True,True,False));self.assertIn('censo',listed['hint'])
+        diagnosis=self.root.request('/api/verifactu/records/'+record,headers=self.headers)[1]['diagnosis']
+        self.assertEqual(diagnosis['sent'],{'recipientName':'Cliente QA','recipientNif':'89890001K','description':'Servicio QA'})
+        self.assertEqual(self.root.request('/api/verifactu/action',{'action':'discard','recordId':record},headers=self.headers)[0],400)
+        status,result,_=self.root.request('/api/verifactu/action',{'action':'subsanar','recordId':record,'details':{'recipientName':'Cliente QA, S.L.','recipientNif':'89890002K','description':'Servicio QA'},'updateClient':True},headers=self.headers)
+        self.assertEqual(status,200,result);self.assertTrue(result['clientUpdated'])
+        state=self.state()['state'];self.assertEqual((state['clients'][0]['name'],state['clients'][0]['nif']),('Cliente QA, S.L.','89890002K'));self.assertEqual(state['invoices'],invoices)
+        sent=self.root.request('/api/verifactu/records/'+result['recordId']+'/xml',headers=self.headers)[1];self.assertIn(b'89890002K',sent);
+    def test_records_that_can_be_neither_corrected_nor_cancelled_can_be_discarded(self):
+        inv=self.issue();source=inv['verifactu']['recordId'];ident=str(uuid.uuid4())
+        # A record issued before quarter series used «T»: AEAT rejects the number itself (code 1130).
+        with closing(sqlite3.connect(Path(self.temp.name)/'finance.sqlite')) as c,c:
+            c.row_factory=sqlite3.Row;row=dict(c.execute('SELECT * FROM vf_records WHERE id=?',(source,)).fetchone());old=json.loads(row['invoice_json'])
+            old['number']=old['number'].replace('T-','º-');row.update(id=ident,invoice_json=json.dumps(old),hash='A'*64);row.pop('seq')
+            c.execute(f"INSERT INTO vf_records({','.join(row)}) VALUES({','.join('?'*len(row))})",tuple(row.values()))
+            c.execute("INSERT INTO vf_jobs(record_id,status,error,code,updated_at) VALUES(?,?,?,?,?)",(ident,'rejected','El campo NumSerieFactura contiene caracteres no permitidos.','1130',now()))
+        listed=self.records()[ident];self.assertEqual((listed['field'],listed['canCorrect'],listed['canCancel'],listed['canDiscard']),('number',False,False,True))
+        for action,details in [('subsanar',{'recipientName':'Otro'}),('anular',{'reason':'Número no válido'})]:
+            status,result,_=self.root.request('/api/verifactu/action',{'action':action,'recordId':ident,'details':details},headers=self.headers);self.assertEqual(status,400);self.assertIn('número',result['error'])
+        status,result,_=self.root.request('/api/verifactu/action',{'action':'discard','recordId':ident},headers=self.headers);self.assertEqual(status,200,result)
+        self.assertEqual(self.records()[ident]['status'],'discarded');self.assertEqual(self.root.request('/api/verifactu/action',{'action':'discard','recordId':ident},headers=self.headers)[0],400)
     def test_member_sees_only_own_records_and_cannot_configure_certificate(self):
         foreign=self.issue();email=uuid.uuid4().hex+'@example.test'
         status,data,_=self.root.request('/api/users',{'name':'Miembro QA','email':email,'password':PASSWORD,'role':'member','memberships':[{'emitterId':self.emitter,'role':'member'}]});self.assertEqual(status,201,data)

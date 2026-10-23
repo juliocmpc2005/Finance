@@ -12,6 +12,12 @@ Abrir http://localhost:4173. Requiere Python 3.10 o posterior y Node.js LTS. La 
 
 Para instalarla en un servidor (Ubuntu Server 24.04 LTS, Cloudflare Tunnel y traslado de datos) ver [deploy/GUIA-SERVIDOR.md](deploy/GUIA-SERVIDOR.md).
 
+## Guía de uso
+
+El botón **?** (arriba a la derecha, también en el móvil) y **Guía de uso** en el menú lateral abren una guía con capítulos cortos: primeros pasos, facturas, clientes, PDF y correo, cobros, Análisis, facturas de ejemplo, «Me he equivocado, ¿qué hago?» y un glosario. Los administradores ven además los capítulos de administración (configuración, correo, usuarios, emisores, copias, importación y VERI*FACTU). El contenido está en `dist/guide.js`.
+
+Las capturas (`dist/assets/guide/`, versiones de escritorio y móvil) se generan con datos de demostración en un servidor temporal, nunca con los datos reales. Después de cambiar la interfaz, regenerarlas con `PATH="$PWD/.venv/bin:$PATH" node scripts/guide-screenshots.mjs`.
+
 ## Empresas, autónomos y usuarios
 
 La instalación admite varios emisores independientes. El selector **Empresa / autónomo** cambia el contexto de Facturas, Clientes, Análisis y Configuración. En móvil aparece encima del contenido. Cada factura pertenece al emisor seleccionado y conserva el usuario responsable, creador y emisor material. Los clientes, series de numeración, cobros, anticipos, justificantes, importaciones e historial son independientes por perfil. Dos emisores pueden tener el mismo número de factura; dentro de un emisor sigue siendo único.
