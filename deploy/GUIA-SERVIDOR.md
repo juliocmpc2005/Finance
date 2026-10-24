@@ -2,6 +2,30 @@
 
 Plan acordado el 22/10/2026 para llevar arquitecturadeguardia Finance del Mac a un servidor propio en la oficina, accesible desde fuera con un subdominio de la web de la empresa. Recoge las decisiones, sus motivos y los pasos. Los detalles técnicos de la instalación están en [README.md](README.md) (esta misma carpeta).
 
+## Estado del servidor (24/10/2026)
+
+| | |
+|---|---|
+| Equipo | Portátil **HP Notebook** (BIOS F.14), Intel i3-5005U, 11 GB de RAM, SSD Patriot P220 de 128 GB (SMART correcto, 90 h de uso) |
+| Sistema | Ubuntu Server 24.04.5 LTS · nombre **agserver** · usuario de administración **jcm** · hora de España |
+| Red | Cable (`enp7s0`) con IP automática (DHCP); el WiFi está apagado |
+| Aplicación | Instalada con `install-ubuntu.sh`, versión `dc524a3`, **sin dominio** (solo accesible por SSH). Servicio `adg-finance` activo al arrancar; genera PDF |
+| Datos | Trasladados del Mac el 24/10/2026 con `migrate-data.sh` (2 usuarios, 3 emisores, 23 documentos, 8 registros VERI*FACTU; integridad correcta). **Desde entonces solo se trabaja en el servidor.** |
+| Acceso remoto | **Tailscale**: `agserver` · `100.70.139.63` (cuenta juliocmpc2005). SSH con la clave del Mac |
+| Tapa | Cerrar la tapa no suspende el equipo (`/etc/systemd/logind.conf.d/tapa.conf`) |
+| Batería | **No se detecta**: un corte de luz apaga el servidor en el acto |
+| GitHub | Clave de despliegue de solo lectura «servidor agserver (solo lectura)» |
+| Comprobado | Tras reiniciar vuelven solos la aplicación, Tailscale, la red y la hora |
+
+### Al llegar al sitio nuevo
+
+1. Conectar el **cable de red** y el **cargador**, y encender el equipo. La tapa se puede cerrar.
+2. Desde el Mac, con Tailscale activo: `ssh jcm@agserver` (o `ssh jcm@100.70.139.63`). No hace falta saber la IP de la red nueva.
+3. Usar la aplicación mientras no haya dominio: `ssh -L 4173:127.0.0.1:4173 jcm@agserver` y abrir `http://localhost:4173`.
+4. Cuando el túnel de Cloudflare esté creado: `ssh -t jcm@agserver sudo bash /opt/adg-finance/deploy/install-ubuntu.sh --domain finance.tudominio.es --cloudflare` (funciona a distancia por Tailscale; pide la contraseña de `jcm` y el token).
+
+Antes de llevárselo: instalar Tailscale en el Mac con la misma cuenta, **desactivar la caducidad de la clave** de agserver en login.tailscale.com/admin/machines (si no, deja de conectarse a los 180 días) y revisar en la BIOS (F10 al encender) si existe la opción de encender al detectar corriente («Power On when AC Detected» o similar). Sin batería ni esa opción, tras un corte hay que encenderlo a mano; un SAI pequeño lo evita.
+
 ## Resumen de decisiones
 
 | Tema | Decisión | Motivo |
@@ -242,7 +266,9 @@ Detalle en el [README principal](../README.md):
 ## Pendiente
 
 - [x] Unir la rama `correo-anulaciones-despliegue` a `main` y subirla a GitHub (hecho el 22/10/2026: commits `0fd8069` y `30b5366`; `node_modules` ya no se versiona).
-- [ ] **Probar `install-ubuntu.sh` en un Ubuntu 24.04 real**: solo se ha comprobado la sintaxis y la lógica de opciones; el empaquetado de `migrate-data.sh` sí se probó con los datos reales (sin enviarlos).
+- [x] Probar `install-ubuntu.sh` y `migrate-data.sh` en un Ubuntu 24.04 real (24/10/2026, en agserver: instalación, PDF, traslado de datos y reinicio correctos).
+- [ ] Tailscale en el Mac, **caducidad de la clave desactivada** para agserver y opción de la BIOS para encender al volver la corriente (o un SAI).
+- [ ] Crear el túnel de Cloudflare y ejecutar `install-ubuntu.sh --domain … --cloudflare` (se puede hacer a distancia por Tailscale).
 - [ ] **Comprobar a través de Cloudflare** que el límite de intentos de acceso se aplica a cada persona y no a toda la oficina: la aplicación toma la IP de la cabecera `X-Forwarded-For` de las conexiones locales, que Cloudflare debería enviar a través del túnel. Prueba: varios intentos fallidos desde el móvil no deben bloquear el acceso desde la oficina.
 - [ ] Configurar la **copia externa** diaria y ensayar una restauración.
 - [ ] Decidir el **formato del número en la factura** («2026-59» en lugar de «ADG-4T-2026-59»): quedaron abiertas cuatro dudas — mostrar la serie en pequeño o no, formato de las rectificativas («R-2026-01»), qué referencia pedir para la transferencia y si se aplica solo a facturas nuevas. La serie debe constar en la factura según el Reglamento de facturación (art. 6.1.a).
