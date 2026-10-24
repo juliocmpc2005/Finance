@@ -137,3 +137,11 @@ def record(c,user,invoice_id,document,mail):
 def history(c,user,invoice_id):
     rows=c.execute('SELECT l.*,u.name AS sender FROM mail_log l LEFT JOIN users u ON u.id=l.sent_by WHERE l.emitter_id=? AND l.invoice_id=? ORDER BY l.sent_at DESC',(user['emitterId'],invoice_id))
     return [{'id':r['id'],'sentAt':r['sent_at'],'number':r['number'],'recipients':json.loads(r['recipients']),'subject':r['subject'],'sentBy':r['sender'] or ''} for r in rows]
+
+def sent_summary(c,user,visible=None):
+    """For each invoice of the issuer: how many e-mails, the last one and its recipients. visible limits it to those invoices."""
+    result={}
+    for r in c.execute('SELECT invoice_id,recipients,sent_at FROM mail_log WHERE emitter_id=? ORDER BY sent_at DESC',(user['emitterId'],)):
+        if visible is not None and r['invoice_id'] not in visible:continue
+        result.setdefault(r['invoice_id'],{'count':0,'lastSentAt':r['sent_at'],'recipients':json.loads(r['recipients'])})['count']+=1
+    return result

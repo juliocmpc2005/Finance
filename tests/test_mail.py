@@ -80,6 +80,10 @@ class MailApiTests(unittest.TestCase):
         self.assertIn('Adjunta.',message.get_body(('plain',)).get_content())
         status,history,_=self.admin.request('/api/invoices/invoice/emails');self.assertEqual(status,200)
         self.assertEqual([(e['recipients'],e['number'],e['sentBy']) for e in history['emails']],[(['cliente@example.test','Otro@Example.test'],self.number,'Admin de correo')])
+        # The income workbook reads one summary per invoice: how many e-mails and the last one.
+        self.assertEqual(self.send(to='contabilidad@example.test')[0],200)
+        sent=self.admin.request('/api/mail/sent')[1]['sent']
+        self.assertEqual(list(sent),['invoice']);self.assertEqual((sent['invoice']['count'],sent['invoice']['recipients']),(2,['contabilidad@example.test']))
     def test_rejects_invalid_requests_before_contacting_the_server(self):
         status,result,_=self.send();self.assertEqual(status,400);self.assertIn('configurar el correo',result['error'])
         self.configure()
@@ -115,6 +119,8 @@ class MailApiTests(unittest.TestCase):
         snapshot=member.state();snapshot['state']['invoices'].append(self.draft('own'));self.assertEqual(member.request('/api/state',snapshot)[0],200)
         self.assertEqual(member.command({'type':'issue_invoice','invoiceId':'own'})[0],200)
         status,result,_=self.send(member,invoice='own');self.assertEqual(status,200,result);self.assertEqual(result['email']['sentBy'],'Usuario')
+        self.assertEqual(self.send()[0],200)
+        self.assertEqual(set(self.admin.request('/api/mail/sent')[1]['sent']),{'invoice','own'});self.assertEqual(list(member.request('/api/mail/sent')[1]['sent']),['own'])
 
 class FakeSMTP:
     def __init__(self,host,port,timeout=None,context=None):self.calls=[('connect',host,port,context is not None)]

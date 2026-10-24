@@ -44,7 +44,7 @@ try{
  // Análisis: its video above the steps, with downloads named after the chapter.
  await admin.locator('.guide-card[data-guide="analisis"]').click();await admin.getByRole('heading',{name:'Análisis: lo que te deben'}).waitFor();
  await admin.waitForFunction(()=>document.querySelector('.guide-video video')?.readyState>=1);assert.ok(await admin.locator('.guide-video video').evaluate(v=>v.duration)>45);
- assert.equal(await admin.locator('.guide-steps li').count(),4);assert.equal(await admin.locator('.guide-downloads a').first().getAttribute('download'),'Análisis - arquitecturadeguardia Finance.mp4');
+ assert.equal(await admin.locator('.guide-steps li').count(),5);assert.equal(await admin.locator('.guide-downloads a').first().getAttribute('download'),'Análisis - arquitecturadeguardia Finance.mp4');
  assert.equal((await admin.request.get(base+'/assets/guide/video-analisis.mp4',{headers:{Range:'bytes=0-99'}})).status(),206);
  await admin.locator('.guide-back').click();await admin.locator('.guide-card').first().waitFor();
  await admin.locator('[data-guide="crear-factura"]').first().click();await admin.getByRole('heading',{name:'Crear una factura'}).waitFor();

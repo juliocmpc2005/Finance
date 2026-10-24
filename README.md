@@ -135,6 +135,15 @@ Se conservan números, totales históricos, procedencia de las filas y anotacion
 
 Las hojas auxiliares no se combinan automáticamente con la principal. Un cobro sin fecha no se considera confirmado. Los gastos de confirming no se descuentan de la deuda sin una clasificación explícita. Los clientes importados sin datos fiscales completos deben completarse antes de emitir nuevas facturas.
 
+## Descargar el Excel de ingresos
+
+Análisis → **Descargar Excel** guarda las facturas del periodo elegido con el formato de la hoja de ingresos de la oficina. El archivo se llama según el periodo: `Ingresos-2026.xlsx`, `Ingresos-3T-2026.xlsx`, `Ingresos-octubre-2026.xlsx` o `Ingresos-01-01-2026_a_31-03-2026.xlsx`. Si hay un cliente elegido, se añade su nombre.
+
+- Columnas de la hoja original (Nº Fact a Ingresado en) y, a continuación, los datos de cada cobro (nombre, pagador, referencia bancaria, importe del ingreso y lo aplicado a la factura, observaciones, justificante), la situación de cobro (estado, cobrado, ajustes, devoluciones, pendiente), los datos fiscales (NIF, tipos de IVA, retención) y la gestión (responsable, rectificativa, envío por correo y estado VERI*FACTU).
+- Un color por trimestre, en rojo lo pendiente, y tras cada trimestre las filas «Pendiente de cobro» y su subtotal; al final, los totales del periodo. Las sumas, el total (base + IVA − retención) y el pendiente son fórmulas.
+- Respeta el cliente y la fecha de situación de cobro elegidos. No incluye facturas anuladas, de ejemplo ni de pruebas VERI*FACTU. Si una factura tiene varios cobros, cada uno ocupa una línea de la misma celda, en el mismo orden en todas las columnas del cobro.
+- Se genera en el navegador (`dist/income-excel.js` y `dist/xlsx.js`, sin librerías externas); la hoja «Información» explica cada criterio.
+
 ## Datos y copias
 
 - Base de datos: `data/finance.sqlite`. Se conserva el historial de operaciones y las últimas 200 versiones completas del estado por emisor. Las tablas originales se mantienen para arquitecturadeguardia; los perfiles nuevos utilizan estados independientes. Los usuarios, membresías y documentos conservados comparten la base de datos con comprobaciones de emisor en cada operación.

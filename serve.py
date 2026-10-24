@@ -535,6 +535,7 @@ class LocalHandler:
                 if path.startswith('/api/invoices/') and path.endswith('/emails'):
                     ident=unquote(path.split('/')[3]);access.require_own_invoice(state or {'invoices':[]},user,ident)
                     return self.send_json({'emails':mailer.history(c,user,ident)})
+                if path=='/api/mail/sent':return self.send_json({'sent':mailer.sent_summary(c,user,None if access.sees_everything(user) else access.own_ids(state or {'invoices':[]},user))})
                 if path in ['/api/backup','/api/backup.zip']:auth.require_admin(user)
                 if path in ['/api/backup.zip','/api/backup']:
                     if not state:raise DomainError('Todavía no hay datos guardados.')
