@@ -200,11 +200,32 @@ Copia SQLite de forma consistente (comprueba su integridad), justificantes, docu
 
 Zero Trust → **Access → Applications → Add an application → Self-hosted** con `finance.tudominio.es` y una política que permita los correos de la empresa. Antes de ver la pantalla de acceso, cada persona confirma su correo con un código. Gratis hasta 50 usuarios.
 
+## Trabajo diario: del Mac al servidor
+
+```
+Mac (pruebas)                         GitHub (main)            Servidor agserver (datos reales)
+1. Cambios y pruebas con npm start
+   (localhost:4174, sin AEAT ni correo)
+2. Commit y push            ───────▶  versión nueva  ───────▶  3. bash deploy/actualizar-servidor.sh
+```
+
+1. En el Mac se desarrolla y se prueba con `npm start` (copia de pruebas en `http://localhost:4174`): datos de prueba y nada sale del Mac. Los datos reales solo están en el servidor.
+2. Cuando funciona: commit y push a `main`.
+3. Desde el Mac, en la carpeta del proyecto y con Tailscale activo: `bash deploy/actualizar-servidor.sh`. El script:
+   - comprueba que no hay cambios sin commit y que el Mac coincide con `main` en GitHub;
+   - muestra la versión del servidor, la nueva y la lista de cambios;
+   - si cambia la **versión fiscal**, avisa y pide confirmar que la declaración responsable de la nueva versión está guardada;
+   - pasa todas las pruebas (`--rapido` omite las de navegador) y pide confirmación;
+   - en el servidor (pide la contraseña de `jcm`): hace una **copia de la base de datos** en `/var/lib/adg-finance/backups/antes-actualizar-FECHA-VERSIÓN.sqlite`, actualiza, comprueba que el servicio está activo, que la aplicación responde y que genera PDF, y **si algo falla vuelve sola a la versión anterior**.
+4. La aplicación se reinicia en unos segundos: mejor fuera del horario de trabajo. Los cambios de estructura de la base de datos se aplican solos al arrancar.
+
+Volver a una versión concreta a mano: `ssh -t jcm@agserver sudo bash /opt/adg-finance/deploy/install-ubuntu.sh --commit VERSIÓN`. Restaurar la copia de la base de datos es una decisión manual, porque descartaría lo guardado después de la actualización.
+
 ## Uso diario y mantenimiento
 
 | Tarea | Cómo |
 |---|---|
-| Actualizar la aplicación | Publicar los cambios en `main` de GitHub y ejecutar en el servidor `sudo bash /opt/adg-finance/deploy/install-ubuntu.sh` (recuerda dominio y modo) |
+| Actualizar la aplicación | Desde el Mac: `bash deploy/actualizar-servidor.sh` (ver «Trabajo diario: del Mac al servidor») |
 | Reiniciar la aplicación | `sudo systemctl restart adg-finance` |
 | Ver el registro | `journalctl -u adg-finance -n 100` · túnel: `journalctl -u cloudflared -n 100` |
 | Estado | `systemctl status adg-finance cloudflared` |

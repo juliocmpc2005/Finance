@@ -1,5 +1,7 @@
 node_modules/
 data/
+# Copias de datos reales y datos de pruebas del Mac: nunca al repositorio.
+data-*/
 __pycache__/
 *.pyc
 previews/

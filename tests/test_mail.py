@@ -3,6 +3,7 @@ import email, os, smtplib, socket, socketserver, sqlite3, subprocess, tempfile, 
 from contextlib import closing
 from email import policy
 from pathlib import Path
+from unittest.mock import patch
 from backend import mailer, verifactu
 from backend.finance import DomainError, today
 from test_auth import PASSWORD, PERSONAL
@@ -142,6 +143,14 @@ class DeliverTests(unittest.TestCase):
         self.assertEqual(self.servers[-1].calls,[('connect','smtp.example.test',465,True),('login','u@example.test'),('send','c@example.test'),('quit',)])
         mailer.deliver(self.settings('starttls'),None,self.temp.name,self.module)
         self.assertEqual(self.servers[-1].calls,[('connect','smtp.example.test',465,False),('starttls',),('login','u@example.test'),('quit',)])
+    def test_test_copy_saves_messages_instead_of_sending_them(self):
+        mail=mailer.message(self.settings('ssl'),{'name':'Estudio'},'F-9',{'to':['c@example.test'],'subject':'Factura','message':'Hola'},b'%PDF-1.4')
+        with patch.dict(os.environ,{'ADG_MAIL_NETWORK':'off'}):
+            mailer.deliver(self.settings('ssl'),mail,self.temp.name,self.module)
+            with self.assertRaisesRegex(DomainError,'desactivado'):mailer.deliver(self.settings('ssl'),None,self.temp.name,self.module)
+        self.assertEqual(self.servers,[])
+        saved=list((Path(self.temp.name)/'correo-de-prueba').glob('*.eml'));self.assertEqual(len(saved),1)
+        self.assertIn(b'Subject: Factura',saved[0].read_bytes())
     def test_rejected_credentials_are_explained(self):
         with self.assertRaisesRegex(DomainError,'usuario o la contraseña'):mailer.deliver(self.settings('ssl','otra'),None,self.temp.name,self.module)
 

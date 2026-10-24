@@ -177,3 +177,4 @@ a.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;text
 .guide-downloads{display:flex;flex-wrap:wrap;gap:8px 22px;font-size:13px;margin:0 0 18px}
 .guide-downloads a{display:inline-flex;align-items:center;gap:6px}
 .guide-downloads svg{width:15px;height:15px}
+.test-copy-banner{margin:0 0 18px;padding:10px 16px;border:1px dashed #c98a3f;border-radius:8px;background:#fbf3e4;color:#7d5a22;font-size:12px;line-height:1.6}

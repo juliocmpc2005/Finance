@@ -2,7 +2,8 @@
 
 The password is stored encrypted with the server key. SMTP traffic runs outside the database lock;
 only successful deliveries are logged, in a table apart from the (immutable) issued invoices."""
-import json, re, smtplib, ssl
+import json, os, re, smtplib, ssl
+from pathlib import Path
 from email.message import EmailMessage
 from email.utils import formataddr, formatdate, make_msgid
 from . import auth, verifactu
@@ -106,7 +107,12 @@ def message(settings,company,number,mail,pdf):
     return result
 
 def deliver(settings,mail,data_dir,smtp=smtplib):
-    """Connects and authenticates; without a message it only checks the account."""
+    """Connects and authenticates; without a message it only checks the account.
+    With ADG_MAIL_NETWORK=off (the Mac test copy) nothing is sent: the message is saved as an .eml file."""
+    if os.environ.get('ADG_MAIL_NETWORK')=='off':
+        if mail is None:raise DomainError('El envío de correo está desactivado en esta copia de pruebas: los mensajes se guardan en la carpeta correo-de-prueba.')
+        folder=Path(data_dir)/'correo-de-prueba';folder.mkdir(exist_ok=True)
+        (folder/(now().replace(':','-')[:19]+'-'+uid()[:6]+'.eml')).write_bytes(mail.as_bytes());return
     try:password=verifactu.vault(data_dir).decrypt(settings['password']).decode() if settings['password'] is not None else None
     except verifactu.InvalidToken:raise DomainError('La contraseña guardada no se puede leer. Vuelve a guardarla en la configuración del correo.')
     context=ssl.create_default_context()

@@ -4,11 +4,15 @@ Aplicación local para preparar facturas y gestionar su análisis y cobro. Inter
 
 ## Arrancar
 
+La facturación real está en el servidor (ver [deploy/GUIA-SERVIDOR.md](deploy/GUIA-SERVIDOR.md)). En el Mac, `npm start` arranca una **copia de pruebas** para desarrollar y probar cambios:
+
 ```sh
 npm start
 ```
 
-Abrir http://localhost:4173. Requiere Python 3.10 o posterior y Node.js LTS. La primera vez, ejecutar `sh scripts/setup-server.sh`, que crea el entorno `.venv` con el servidor HTTP [Waitress](https://docs.pylonsproject.org/projects/waitress/) (gratuito y de código abierto) y las dependencias de VERI*FACTU. Ejecutar `npm install` para instalar Playwright, utilizado para conservar los PDF. En este Mac utiliza Google Chrome; en otro equipo se puede indicar `CHROME_PATH` o instalar Chromium con `npx playwright install chromium`. Los PDF se preparan en el servidor y no envían datos a servicios externos.
+Abrir http://localhost:4174. Usa la carpeta `data-pruebas/` (la primera vez pide crear una cuenta de administrador y muestra datos de demostración), muestra el aviso «Copia de pruebas en este Mac» y «PRUEBAS» en el título de la pestaña, y **no envía nada fuera**: ni registros a la AEAT (`ADG_VERIFACTU_NETWORK=off`) ni correos (`ADG_MAIL_NETWORK=off`; los mensajes se guardan como `.eml` en `data-pruebas/correo-de-prueba/`). El puerto 4173 queda para el túnel al servidor real (`ssh -L 4173:127.0.0.1:4173 jcm@agserver`). La copia de los datos reales trasladados al servidor el 24/10/2026 se conserva en `data-copia-2026-10-24/`; ni esa carpeta ni `data-pruebas/` se suben al repositorio.
+
+Requiere Python 3.10 o posterior y Node.js LTS. La primera vez, ejecutar `sh scripts/setup-server.sh`, que crea el entorno `.venv` con el servidor HTTP [Waitress](https://docs.pylonsproject.org/projects/waitress/) (gratuito y de código abierto) y las dependencias de VERI*FACTU. Ejecutar `npm install` para instalar Playwright, utilizado para conservar los PDF. En este Mac utiliza Google Chrome; en otro equipo se puede indicar `CHROME_PATH` o instalar Chromium con `npx playwright install chromium`. Los PDF se preparan en el servidor y no envían datos a servicios externos.
 
 Para instalarla en un servidor (Ubuntu Server 24.04 LTS, Cloudflare Tunnel y traslado de datos) ver [deploy/GUIA-SERVIDOR.md](deploy/GUIA-SERVIDOR.md).
 

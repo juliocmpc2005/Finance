@@ -9,6 +9,7 @@
 # Volver a ejecutarlo actualiza el código desde GitHub, las dependencias y reinicia el servicio.
 # El dominio y el modo se recuerdan en /etc/default/adg-finance; --no-domain vuelve al acceso por SSH.
 # El token del túnel se pide sin mostrarlo (o se lee de CLOUDFLARE_TUNNEL_TOKEN); solo hace falta la primera vez.
+# --commit SHA instala esa versión exacta de la rama (para volver atrás); no se recuerda.
 # Guía completa: deploy/GUIA-SERVIDOR.md
 set -euo pipefail
 
@@ -26,7 +27,7 @@ GITHUB_ED25519=SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU
 step(){ printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 die(){ printf '\nError: %s\n' "$*" >&2; exit 1; }
 
-DOMAIN='';MODE=''
+DOMAIN='';MODE='';COMMIT=''
 [ -f "$SETTINGS" ] && . "$SETTINGS"
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -36,13 +37,16 @@ while [ $# -gt 0 ]; do
         --no-domain) DOMAIN='';MODE=local;shift;;
         --branch) BRANCH=${2:-};shift 2;;
         --repo) REPO=${2:-};shift 2;;
-        -h|--help) sed -n '2,13p' "$0";exit 0;;
+        --commit) COMMIT=${2:-};shift 2;;
+        -h|--help) sed -n '2,14p' "$0";exit 0;;
         *) die "Opción desconocida: $1 (usa --help)";;
     esac
 done
 # local: solo túnel SSH · caddy: HTTPS en este equipo (puertos 80/443) · cloudflare: Cloudflare Tunnel, sin puertos abiertos.
 if [ -z "$DOMAIN" ] && { [ "$MODE" = cloudflare ] || [ "$MODE" = caddy ]; };then die "--$MODE necesita también --domain, por ejemplo --domain finance.empresa.es";fi
 if [ -z "$DOMAIN" ];then MODE=local;elif [ -z "$MODE" ] || [ "$MODE" = local ];then MODE=caddy;fi
+# --commit installs one exact version of the branch (deploy/actualizar.sh uses it to go back); it is not remembered.
+if [ -n "$COMMIT" ] && ! printf '%s' "$COMMIT" | grep -Eq '^[0-9a-f]{7,40}$'; then die "El commit «${COMMIT}» no es válido."; fi
 if [ -n "$DOMAIN" ] && ! printf '%s' "$DOMAIN" | grep -Eq '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$'; then
     die "El dominio «${DOMAIN}» no es válido. Escríbelo sin https:// ni barras, por ejemplo finance.empresa.es"
 fi
@@ -113,6 +117,10 @@ if [ -d "$APP/.git" ]; then
     git -C "$APP" reset -q --hard "origin/$BRANCH"
 else
     git clone -q --branch "$BRANCH" "$REPO" "$APP"
+fi
+if [ -n "$COMMIT" ]; then
+    git -C "$APP" merge-base --is-ancestor "$COMMIT" "origin/$BRANCH" 2>/dev/null || die "El commit ${COMMIT} no pertenece a la rama ${BRANCH}."
+    git -C "$APP" reset -q --hard "$COMMIT"
 fi
 git -C "$APP" log -1 --format='Versión: %h · %ci · %s'
 

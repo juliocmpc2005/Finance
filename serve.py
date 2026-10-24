@@ -20,6 +20,8 @@ DATA=Path(os.environ.get('ADG_DATA_DIR',ROOT/'data'));DATA.mkdir(parents=True,ex
 (DATA/'restore-previews').mkdir(exist_ok=True)
 (DATA/'attachments').mkdir(exist_ok=True);(DATA/'backups').mkdir(exist_ok=True)
 PORT=int(os.environ.get('ADG_PORT','4173'));LOCK=RLock()
+# The Mac development copy (scripts/start-server.sh) is marked so it can never be mistaken for the real server.
+TEST_COPY=os.environ.get('ADG_COPIA_PRUEBAS')=='1'
 PUBLIC_ORIGIN=os.environ.get('ADG_PUBLIC_ORIGIN','').rstrip('/')
 if PUBLIC_ORIGIN:
     parsed_origin=urlparse(PUBLIC_ORIGIN)
@@ -469,7 +471,7 @@ class LocalHandler:
             with LOCK,connect() as c:
                 if path=='/api/auth/session':
                     user=auth.session_user(c,self.headers,False)
-                    return self.send_json({'user':user,'setupRequired':not bool(c.execute('SELECT 1 FROM users LIMIT 1').fetchone()),'remoteOrigin':PUBLIC_ORIGIN if user and user['role']=='admin' else None})
+                    return self.send_json({'user':user,'setupRequired':not bool(c.execute('SELECT 1 FROM users LIMIT 1').fetchone()),'remoteOrigin':PUBLIC_ORIGIN if user and user['role']=='admin' else None,'testCopy':TEST_COPY})
                 if path=='/api/emitters':return self.send_json({'emitters':emitters.available(c,self.account_user(c))})
                 if path=='/api/users':
                     account=self.account_user(c);emitters.require_root(account)
